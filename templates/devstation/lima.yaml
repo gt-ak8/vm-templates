@@ -1,0 +1,48 @@
+# Lima instance: Debian 13 (trixie) dev VM for AI agents.
+#
+# Image-only base (template:_images/debian-13, NOT template:debian-13) so lima
+# adds NO default mounts: only the dirs below are shared, not your whole
+# home. Fixed user `dev` at /home/dev matches the Home Manager flake (#devstation)
+# and gives every VM an identical base user.
+#
+# One-time host prep, then start:
+#   <repo>/host/host-setup.sh [name]
+#   <repo>/templates/devstation/create.sh [name]
+base: template:_images/debian-13
+
+user:
+  name: "dev"
+  home: "/home/dev" # else lima uses /home/dev.guest, breaking the flake
+
+cpus: 4
+memory: "16GiB"
+disk: "100GiB"
+
+# Exclude 9p: forces virtiofs mounts on Apple Silicon.
+mountTypesUnsupported: [9p]
+
+mounts:
+  # The VM's ~/.claude, backed by a host dir: auth + settings + history persist
+  # across VM recreation and are shared by every VM using this dir. Home Manager
+  # does NOT manage ~/.claude (see home/home.nix). Provide config from the host
+  # (see README "Claude config"); the VM owns settings/state.
+  - location: "~/lima/claude"
+    mountPoint: "/home/dev/.claude"
+    writable: true
+  # The VM's ~/.agents, backed by a host dir: skill installers (npx skills CLI)
+  # write real files here and symlink them into ~/.claude, so installed skills
+  # persist across VM recreation and are shared by every VM using this dir.
+  - location: "~/lima/agents"
+    mountPoint: "/home/dev/.agents"
+    writable: true
+
+# Minimum needed to run bootstrap.sh: the Debian cloud image ships without git.
+# Everything else comes from bootstrap.sh / home-manager.
+provision:
+  - mode: system
+    script: |
+      #!/bin/sh
+      command -v git >/dev/null 2>&1 || { apt-get update -y && apt-get install -y git; }
+
+ssh:
+  forwardAgent: true # commit signing / git push via the host agent
