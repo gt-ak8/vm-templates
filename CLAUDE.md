@@ -9,6 +9,7 @@ Lima VM templates for disposable agentic dev sandbox VMs on macOS.
 
 ## Template register
 
-| Template   | Info                    |
-| ---------- | ----------------------- |
-| devstation | `templates/devstation/` |
+| Template                | Info                                               |
+| ----------------------- | -------------------------------------------------- |
+| devstation              | `templates/devstation/` (Lima)                     |
+| microsandbox devstation | `microsandbox/` (microVM substrate, `wbox` binary) |

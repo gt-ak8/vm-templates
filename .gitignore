@@ -2,3 +2,8 @@
 .DS_STORE
 .env
 .agents/
+
+# microsandbox
+microsandbox/.runtime
+microsandbox/.env
+microsandbox/wbox/target
