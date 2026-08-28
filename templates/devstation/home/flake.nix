@@ -8,7 +8,7 @@
     home-manager.inputs.nixpkgs.follows = "nixpkgs";
     # herdr: agent multiplexer; upstream flake builds from source.
     # Must match the host client version exactly: `herdr --remote` refuses a mismatch.
-    herdr.url = "github:ogulcancelik/herdr/v0.7.5";
+    herdr.url = "github:ogulcancelik/herdr/v0.8.2";
     # worktrunk: upstream flake pinned to a release tag (nixpkgs lags releases).
     # Ships its own HM module (package + shell integration); builds from source.
     worktrunk.url = "github:max-sixty/worktrunk/v0.72.0";
