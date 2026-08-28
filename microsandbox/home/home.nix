@@ -73,7 +73,7 @@
   # `wt config shell install`, which cannot edit the read-only HM zshrc).
   programs.worktrunk = {
     enable = true;
-    package = worktrunk-pkg; # tag-stamped build from flake.nix
+    package = worktrunk-pkg; # prebuilt release binary, see prebuilt.nix
   };
 
   # ------------------------------------------------------------------ git ----
