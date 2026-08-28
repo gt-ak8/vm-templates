@@ -18,12 +18,14 @@ const PROVISION_PATH: &str = "/opt/wbox/provision.sh";
 /// Marker `provision.sh` prints the sandbox public key on.
 const PUBKEY_MARKER: &str = "WBOX_PUBKEY ";
 
-/// Default resources when `--cpus/--memory/--disk` are not given.
+/// Default resources when `--cpus/--memory` are not given. The root disk is
+/// not among them: it is a property of the OCI rootfs source, so a
+/// snapshot-rooted sandbox inherits the size baked in at build time and the
+/// SDK rejects setting it here.
 const DEFAULT_CPUS: u8 = 4;
 const DEFAULT_MEMORY_MIB: u32 = 8192;
-const DEFAULT_DISK_MIB: u32 = 40960;
 
-/// `wbox create <name> [--cpus N] [--memory MiB] [--disk MiB]`.
+/// `wbox create <name> [--cpus N] [--memory MiB]`.
 pub async fn create(name: &str, opts: CreateOpts) -> Res<()> {
     runtime::ensure_runtime().await?;
     // `microsandbox/.env` was already read into the environment by `main`,
@@ -44,7 +46,6 @@ pub async fn create(name: &str, opts: CreateOpts) -> Res<()> {
         .from_snapshot(BASE_SNAPSHOT)
         .cpus(opts.cpus.unwrap_or(DEFAULT_CPUS))
         .memory(opts.memory.unwrap_or(DEFAULT_MEMORY_MIB))
-        .root_disk(opts.disk.unwrap_or(DEFAULT_DISK_MIB))
         .hostname(name)
         .user("dev")
         .workdir("/home/dev")

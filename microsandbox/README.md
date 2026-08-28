@@ -33,10 +33,11 @@ cargo run --release -- destroy mybox
 - `build [--force]` installs the runtime if missing, boots `debian:13`, runs `bootstrap.sh` (apt,
   the `dev` user, single-user Nix, `home-manager switch`, claude/opencode/rustup/mise), stops the
   sandbox and snapshots it as `devstation-base`.
-- `create <name> [--cpus N] [--memory MiB] [--disk MiB]` boots from that snapshot, bind-mounts
+- `create <name> [--cpus N] [--memory MiB]` boots from that snapshot, bind-mounts
   `~/lima/claude` and `~/lima/agents`, injects `GH_TOKEN` as a secret, runs `provision.sh`,
   registers the sandbox's key with GitHub at `/user/keys` and `/user/ssh_signing_keys`, and writes
-  a `Host wbox-<name>` block into `~/.ssh/config.d/wbox`.
+  a `Host wbox-<name>` block into `~/.ssh/config.d/wbox`. The root disk is not settable here: it
+  belongs to the OCI rootfs source, so a sandbox inherits the size baked into the snapshot.
 - `destroy <name>` deletes both GitHub registrations, removes the sandbox and the ssh block. It
   never starts the sandbox, so it works on a stopped one.
 - `ssh-proxy <name>` is internal: the `ProxyCommand` in the generated ssh config. There is no sshd

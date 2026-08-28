@@ -18,7 +18,6 @@ COMMANDS:
 CREATE OPTIONS:
     --cpus <n>                 virtual CPUs
     --memory <mib>             memory in MiB
-    --disk <mib>               root disk size in MiB
 
     -h, --help                 print this help
 ";
@@ -30,8 +29,6 @@ pub struct CreateOpts {
     pub cpus: Option<u8>,
     /// Memory in MiB.
     pub memory: Option<u32>,
-    /// Root disk size in MiB.
-    pub disk: Option<u32>,
 }
 
 /// A parsed command line.
@@ -96,7 +93,13 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                 match arg.as_str() {
                     "--cpus" => opts.cpus = Some(parse_num(&mut it, "--cpus")?),
                     "--memory" => opts.memory = Some(parse_num(&mut it, "--memory")?),
-                    "--disk" => opts.disk = Some(parse_num(&mut it, "--disk")?),
+                    "--disk" => {
+                        return Err(
+                            "--disk is not supported: a sandbox inherits the root disk \
+                             size of the base snapshot"
+                                .to_string(),
+                        );
+                    }
                     other if other.starts_with('-') => {
                         return Err(format!("unknown argument for create: {other}"));
                     }
