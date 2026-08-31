@@ -271,6 +271,26 @@ pub fn ssh_config_path() -> Res<PathBuf> {
 }
 
 /// Append a `Host wbox-<name>` block, adding the `Include` line if needed.
+/// `contents` without the `Host wbox-<name>` block, if it has one.
+///
+/// A block runs from its `Host` line to the next one, so indented options are
+/// dropped with it however many there are.
+pub fn drop_ssh_block(contents: &str, name: &str) -> String {
+    let header = format!("Host wbox-{name}");
+    let mut kept = String::new();
+    let mut skipping = false;
+    for line in contents.lines() {
+        if line.trim_start().starts_with("Host ") {
+            skipping = line.trim() == header;
+        }
+        if !skipping {
+            kept.push_str(line);
+            kept.push('\n');
+        }
+    }
+    kept
+}
+
 fn write_ssh_config(name: &str) -> Res<()> {
     let path = ssh_config_path()?;
     if let Some(parent) = path.parent() {
@@ -280,14 +300,22 @@ fn write_ssh_config(name: &str) -> Res<()> {
     // No blank line around the block: `destroy` removes exactly the lines
     // written here, so repeated create/destroy cycles leave the file as they
     // found it instead of growing a blank line each time.
+    // No host key checking, and nothing recorded: a sandbox is reached only
+    // through the ProxyCommand below, an in-process SSH server with no network
+    // path to spoof, and every recreation of the same name brings a new key.
+    // `accept-new` would trust the first one and then refuse the sandbox after
+    // the next `create`. LogLevel keeps the "Permanently added" line out of
+    // the stream, which tools that read ssh output (herdr --remote) parse.
     let block = format!(
-        "Host wbox-{name}\n    User dev\n    ProxyCommand {} ssh-proxy {name}\n    StrictHostKeyChecking accept-new\n",
+        "Host wbox-{name}\n    User dev\n    ProxyCommand {} ssh-proxy {name}\n    \
+         StrictHostKeyChecking no\n    UserKnownHostsFile /dev/null\n    LogLevel ERROR\n",
         exe.display()
     );
+    // Rewritten rather than skipped when present: a block left by an older
+    // wbox carries that version's options, and the sandbox it described is
+    // gone anyway.
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    if !existing.contains(&format!("Host wbox-{name}\n")) {
-        std::fs::write(&path, format!("{existing}{block}"))?;
-    }
+    std::fs::write(&path, format!("{}{block}", drop_ssh_block(&existing, name)))?;
 
     let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
     let main = Path::new(&home).join(".ssh").join("config");
@@ -297,4 +325,31 @@ fn write_ssh_config(name: &str) -> Res<()> {
         std::fs::write(&main, format!("{include}\n{contents}"))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::drop_ssh_block;
+
+    const CONFIG: &str = "Host wbox-a\n    User dev\n    LogLevel ERROR\nHost wbox-ab\n    User dev\nHost other\n    User me\n";
+
+    #[test]
+    fn drops_the_block_and_all_its_options() {
+        assert_eq!(
+            drop_ssh_block(CONFIG, "a"),
+            "Host wbox-ab\n    User dev\nHost other\n    User me\n"
+        );
+    }
+
+    #[test]
+    fn matches_the_whole_host_name() {
+        // "wbox-a" must not take "wbox-ab" with it.
+        assert!(drop_ssh_block(CONFIG, "ab").contains("Host wbox-a\n"));
+        assert!(!drop_ssh_block(CONFIG, "ab").contains("Host wbox-ab\n"));
+    }
+
+    #[test]
+    fn leaves_a_config_without_the_block_alone() {
+        assert_eq!(drop_ssh_block(CONFIG, "missing"), CONFIG);
+    }
 }

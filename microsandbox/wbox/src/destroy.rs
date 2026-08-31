@@ -53,18 +53,6 @@ fn drop_ssh_config(name: &str) -> Res<()> {
     let Ok(contents) = std::fs::read_to_string(&path) else {
         return Ok(());
     };
-    let header = format!("Host wbox-{name}");
-    let mut kept = String::new();
-    let mut skipping = false;
-    for line in contents.lines() {
-        if line.trim_start().starts_with("Host ") {
-            skipping = line.trim() == header;
-        }
-        if !skipping {
-            kept.push_str(line);
-            kept.push('\n');
-        }
-    }
-    std::fs::write(&path, kept)?;
+    std::fs::write(&path, create::drop_ssh_block(&contents, name))?;
     Ok(())
 }
