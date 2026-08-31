@@ -38,7 +38,7 @@ cargo run --release -- destroy mybox
   All failures are reported at once, before anything boots.
 - `create <name> [--cpus N] [--memory MiB]` boots from that snapshot, bind-mounts
   `~/lima/claude` and `~/lima/agents`, injects `GH_TOKEN` as a secret, runs `provision.sh`,
-  injects `CLAUDE_CODE_OAUTH_TOKEN` as a second secret when it is set,
+  injects `GH_TOKEN` and, when set, `CLAUDE_CODE_OAUTH_TOKEN` as secrets,
   registers the sandbox's key with GitHub at `/user/keys` and `/user/ssh_signing_keys`, and writes
   a `Host wbox-<name>` block into `~/.ssh/config.d/wbox`. The root disk is not settable here: it
   belongs to the OCI rootfs source, so a sandbox inherits the size baked into the snapshot.

@@ -1,12 +1,41 @@
 //! GitHub key registration through the `gh` CLI.
 //!
-//! `gh` is invoked with `GH_TOKEN` inherited from this process. The token is
-//! never logged, never passed as an argument (arguments are world-readable in
-//! the process table) and never written to disk.
+//! Two tokens, deliberately: this module runs on the host and needs
+//! `admin:public_key` and `admin:ssh_signing_key` to add and remove the
+//! sandbox key. That authority must not reach the guest, so it lives in
+//! `GH_ADMIN_TOKEN` and is passed to `gh` per call. `GH_TOKEN` is the narrow
+//! token injected into the sandbox and is never used here.
+//!
+//! The token is never logged, never passed as an argument (arguments are
+//! world-readable in the process table) and never written to disk.
 
 use std::process::Command;
 
 use crate::Res;
+
+/// Env var holding the host-side token that administers the keys.
+pub const ADMIN_TOKEN_VAR: &str = "GH_ADMIN_TOKEN";
+
+/// Env var holding the narrow token injected into the sandbox.
+pub const SANDBOX_TOKEN_VAR: &str = "GH_TOKEN";
+
+/// A `gh` invocation authenticated as the host admin token.
+///
+/// `GH_TOKEN` is overridden rather than left to be inherited: the process
+/// environment carries the sandbox's narrow token under that name, and `gh`
+/// would otherwise pick it up and fail on scope.
+pub fn gh_admin(args: &[&str]) -> Res<Command> {
+    let token = std::env::var(ADMIN_TOKEN_VAR).unwrap_or_default();
+    if token.trim().is_empty() {
+        return Err(format!("{ADMIN_TOKEN_VAR} is not set (add it to microsandbox/.env)").into());
+    }
+    let mut command = Command::new("gh");
+    command
+        .args(args)
+        .env("GH_TOKEN", token)
+        .env_remove("GITHUB_TOKEN");
+    Ok(command)
+}
 
 /// Endpoint for authentication (push/pull) keys.
 pub const AUTH_KEYS_ENDPOINT: &str = "/user/keys";
@@ -16,8 +45,7 @@ pub const SIGNING_KEYS_ENDPOINT: &str = "/user/ssh_signing_keys";
 
 /// Register `pubkey` at `endpoint` under `title`; return the GitHub key id.
 pub fn register_key(endpoint: &str, title: &str, pubkey: &str) -> Res<u64> {
-    let output = Command::new("gh")
-        .args(["api", "-X", "POST", endpoint, "-f"])
+    let output = gh_admin(&["api", "-X", "POST", endpoint, "-f"])?
         .arg(format!("title={title}"))
         .arg("-f")
         .arg(format!("key={pubkey}"))
@@ -44,8 +72,7 @@ pub fn register_key(endpoint: &str, title: &str, pubkey: &str) -> Res<u64> {
 /// account. Every 404 is therefore confirmed with a read of the same path.
 pub fn delete_key(endpoint: &str, id: u64) -> Res<()> {
     let path = format!("{endpoint}/{id}");
-    let output = Command::new("gh")
-        .args(["api", "-X", "DELETE", &path])
+    let output = gh_admin(&["api", "-X", "DELETE", &path])?
         .output()
         .map_err(|e| format!("running gh (is it installed?): {e}"))?;
     if output.status.success() {
@@ -65,8 +92,7 @@ pub fn delete_key(endpoint: &str, id: u64) -> Res<()> {
 
     // The read needs only the `read:` half of the scope, which registering the
     // key already proved. If it still finds the key, the delete was refused.
-    let probe = Command::new("gh")
-        .args(["api", &path])
+    let probe = gh_admin(&["api", &path])?
         .output()
         .map_err(|e| format!("running gh (is it installed?): {e}"))?;
     if probe.status.success() {

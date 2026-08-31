@@ -72,9 +72,9 @@ pub async fn create(name: &str, opts: CreateOpts) -> Res<()> {
         // never persisted: the guest only ever sees the `$MSB_GH_TOKEN`
         // placeholder, which the proxy substitutes for the allowed hosts.
         .secret(|s| {
-            s.env("GH_TOKEN")
+            s.env(github::SANDBOX_TOKEN_VAR)
                 .source(SecretSource::Env {
-                    var: "GH_TOKEN".into(),
+                    var: github::SANDBOX_TOKEN_VAR.into(),
                 })
                 .allow_host("api.github.com")
                 .allow_host("github.com")

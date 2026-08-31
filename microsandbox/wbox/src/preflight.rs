@@ -13,12 +13,12 @@ use microsandbox::Snapshot;
 
 use crate::{Res, build::BASE_SNAPSHOT, github, runtime};
 
-/// Scopes a classic token needs to register and remove the sandbox key.
+/// Scopes the host-side admin token needs to register and remove the key.
 ///
 /// `admin:` on both, not `write:`: creating a signing key only needs
 /// `write:ssh_signing_key`, but `destroy` deletes it and GitHub accepts that
 /// call under `admin:ssh_signing_key` alone.
-const REQUIRED_SCOPES: [&str; 2] = ["admin:public_key", "admin:ssh_signing_key"];
+const ADMIN_SCOPES: [&str; 2] = ["admin:public_key", "admin:ssh_signing_key"];
 
 /// Files `build` copies into the base image.
 const BUILD_PAYLOAD: [&str; 3] = ["bootstrap.sh", "home", "vm-files"];
@@ -63,53 +63,36 @@ fn check_git_identity(problems: &mut Vec<String>) {
     }
 }
 
-/// Prove the token can manage both key namespaces before a sandbox is booted.
+/// Prove each token can do its job, and only its job, before anything boots.
 fn check_github(problems: &mut Vec<String>) {
     if Command::new("gh").arg("--version").output().is_err() {
         problems.push("gh is not on PATH; wbox registers the sandbox key through it".into());
         return;
     }
-    if std::env::var("GH_TOKEN")
-        .unwrap_or_default()
-        .trim()
-        .is_empty()
-    {
-        problems.push("GH_TOKEN is not set (add it to microsandbox/.env)".into());
-        return;
-    }
+    check_admin_token(problems);
+    check_sandbox_token(problems);
+}
 
-    // `gh api -i` prints the response headers ahead of the body. The token is
-    // never echoed: it travels in the environment, not in the arguments.
-    let output = match Command::new("gh").args(["api", "-i", "/user"]).output() {
-        Ok(output) => output,
-        Err(error) => {
-            problems.push(format!("running gh: {error}"));
-            return;
-        }
+/// The host token: must carry the key-admin scopes, and never leaves the Mac.
+fn check_admin_token(problems: &mut Vec<String>) {
+    let Some(head) = token_head(github::ADMIN_TOKEN_VAR, problems) else {
+        return;
     };
-    if !output.status.success() {
-        problems.push(format!(
-            "GH_TOKEN is not usable: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-        return;
-    }
-
-    let body = String::from_utf8_lossy(&output.stdout);
     // An empty header means the same as no header: a fine-grained token.
-    match header(&body, "x-oauth-scopes").filter(|scopes| !scopes.is_empty()) {
+    match header(&head, "x-oauth-scopes").filter(|scopes| !scopes.is_empty()) {
         // A classic token advertises its scopes, so the check is exact.
         Some(scopes) => {
             let granted: Vec<&str> = scopes.split(',').map(str::trim).collect();
-            let missing: Vec<&str> = REQUIRED_SCOPES
+            let missing: Vec<&str> = ADMIN_SCOPES
                 .iter()
                 .copied()
                 .filter(|scope| !granted.contains(scope))
                 .collect();
             if !missing.is_empty() {
                 problems.push(format!(
-                    "GH_TOKEN is missing the {} scope(s). Run `gh auth refresh -h github.com {}` \
+                    "{} is missing the {} scope(s). Run `gh auth refresh -h github.com {}` \
                      and put the new token in microsandbox/.env",
+                    github::ADMIN_TOKEN_VAR,
                     missing.join(" and "),
                     missing
                         .iter()
@@ -123,19 +106,86 @@ fn check_github(problems: &mut Vec<String>) {
         // cannot be read off a GET, so probe what is provable and say so.
         None => {
             for endpoint in [github::AUTH_KEYS_ENDPOINT, github::SIGNING_KEYS_ENDPOINT] {
-                let probe = Command::new("gh").args(["api", endpoint]).output();
-                let readable = probe.map(|out| out.status.success()).unwrap_or(false);
+                let readable = github::gh_admin(&["api", endpoint])
+                    .and_then(|mut c| Ok(c.output()?))
+                    .map(|out| out.status.success())
+                    .unwrap_or(false);
                 if !readable {
                     problems.push(format!(
-                        "GH_TOKEN cannot read {endpoint}; it needs read and write access to \
-                         that key namespace"
+                        "{} cannot read {endpoint}; it needs read and write access to that key \
+                         namespace",
+                        github::ADMIN_TOKEN_VAR
                     ));
                 }
             }
             eprintln!(
-                "wbox: note: GH_TOKEN advertises no scopes (fine-grained token). Read access \
-                 was verified, write access will only be proven when the key is registered."
+                "wbox: note: {} advertises no scopes (fine-grained token). Read access was \
+                 verified, write access will only be proven when the key is registered.",
+                github::ADMIN_TOKEN_VAR
             );
+        }
+    }
+}
+
+/// The sandbox token: must work, and must *not* be able to touch the keys.
+///
+/// This one is injected into the guest, so key-admin authority in it would
+/// defeat the split. A broad token is a warning rather than a hard failure:
+/// it is the user's account and their call, but it should never be silent.
+fn check_sandbox_token(problems: &mut Vec<String>) {
+    let Some(head) = token_head(github::SANDBOX_TOKEN_VAR, problems) else {
+        return;
+    };
+    let Some(scopes) = header(&head, "x-oauth-scopes").filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let granted: Vec<&str> = scopes.split(',').map(str::trim).collect();
+    let excessive: Vec<&str> = ADMIN_SCOPES
+        .iter()
+        .copied()
+        .filter(|scope| granted.contains(scope))
+        .collect();
+    if !excessive.is_empty() {
+        eprintln!(
+            "wbox: warning: {} carries {}. That token is injected into the sandbox, so it \
+             should hold only what the gh CLI needs there (repo, read:org). Keep the key-admin \
+             scopes in {}.",
+            github::SANDBOX_TOKEN_VAR,
+            excessive.join(" and "),
+            github::ADMIN_TOKEN_VAR
+        );
+    }
+}
+
+/// Response head of `GET /user` as seen by the token in `var`.
+///
+/// `gh api -i` prints the headers ahead of the body. The token travels in the
+/// environment, never in an argument.
+fn token_head(var: &str, problems: &mut Vec<String>) -> Option<String> {
+    let token = std::env::var(var).unwrap_or_default();
+    if token.trim().is_empty() {
+        problems.push(format!("{var} is not set (add it to microsandbox/.env)"));
+        return None;
+    }
+    let output = Command::new("gh")
+        .args(["api", "-i", "/user"])
+        .env("GH_TOKEN", token)
+        .env_remove("GITHUB_TOKEN")
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            Some(String::from_utf8_lossy(&output.stdout).into_owned())
+        }
+        Ok(output) => {
+            problems.push(format!(
+                "{var} is not usable: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+            None
+        }
+        Err(error) => {
+            problems.push(format!("running gh: {error}"));
+            None
         }
     }
 }
