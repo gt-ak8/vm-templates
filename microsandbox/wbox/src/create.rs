@@ -18,6 +18,20 @@ const PROVISION_PATH: &str = "/opt/wbox/provision.sh";
 /// Marker `provision.sh` prints the sandbox public key on.
 const PUBKEY_MARKER: &str = "WBOX_PUBKEY ";
 
+/// Env var Claude Code reads its OAuth token from.
+const CLAUDE_TOKEN_VAR: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+
+/// Host Claude Code sends that token to.
+const CLAUDE_API_HOST: &str = "api.anthropic.com";
+
+/// Placeholder handed to the guest in place of the Claude token.
+///
+/// Shaped like a real `claude setup-token` value on purpose. The default
+/// placeholder is `$MSB_<VAR>`, and a client that sanity-checks the token
+/// prefix before its first request would reject that without ever reaching
+/// the proxy that would have substituted it.
+const CLAUDE_TOKEN_PLACEHOLDER: &str = "sk-ant-oat01-msb-placeholder";
+
 /// Default resources when `--cpus/--memory` are not given. The root disk is
 /// not among them: it is a property of the OCI rootfs source, so a
 /// snapshot-rooted sandbox inherits the size baked in at build time and the
@@ -65,9 +79,29 @@ pub async fn create(name: &str, opts: CreateOpts) -> Res<()> {
                 .allow_host("api.github.com")
                 .allow_host("github.com")
                 .allow_host_pattern("*.githubusercontent.com")
+        });
+
+    // Optional: without it the sandbox falls back to the credentials in the
+    // bind-mounted ~/.claude, which is the pre-token behaviour.
+    let claude_token = std::env::var(CLAUDE_TOKEN_VAR).unwrap_or_default();
+    let sandbox = if claude_token.trim().is_empty() {
+        eprintln!(
+            "wbox: note: {CLAUDE_TOKEN_VAR} is not set; Claude Code will use whatever \
+             credentials the mounted ~/.claude holds"
+        );
+        sandbox
+    } else {
+        sandbox.secret(|s| {
+            s.env(CLAUDE_TOKEN_VAR)
+                .source(SecretSource::Env {
+                    var: CLAUDE_TOKEN_VAR.into(),
+                })
+                .placeholder(CLAUDE_TOKEN_PLACEHOLDER)
+                .allow_host(CLAUDE_API_HOST)
         })
-        .create_detached()
-        .await?;
+    };
+
+    let sandbox = sandbox.create_detached().await?;
 
     // The snapshot carries a copy of provision.sh from build time, but the
     // script is the per-create half of the payload and must not need a
