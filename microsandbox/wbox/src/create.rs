@@ -9,7 +9,7 @@ use crate::{
     build::BASE_SNAPSHOT,
     cli::CreateOpts,
     github, preflight, runtime,
-    state::{self, AUTH_KEY_LABEL, SIGNING_KEY_LABEL, State},
+    state::{self, State},
 };
 
 /// Where `provision.sh` lands in the guest.
@@ -113,13 +113,6 @@ pub async fn create(name: &str, opts: CreateOpts) -> Res<()> {
         auth_key_id: Some(auth_key_id),
         signing_key_id: Some(signing_key_id),
     })?;
-    Sandbox::get(name)
-        .await?
-        .modify()
-        .label(AUTH_KEY_LABEL, auth_key_id.to_string())
-        .label(SIGNING_KEY_LABEL, signing_key_id.to_string())
-        .apply()
-        .await?;
 
     write_ssh_config(name)?;
     println!("sandbox {name} ready: ssh wbox-{name}");

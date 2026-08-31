@@ -126,17 +126,16 @@ pub async fn list() -> Res<()> {
         return Ok(());
     }
     for handle in &page.sandboxes {
-        let labels = handle
-            .config()
-            .map(|c| c.spec.labels.clone())
-            .unwrap_or_default();
-        let label = |key: &str| labels.get(key).cloned().unwrap_or_else(|| "-".to_string());
+        // The key ids are not labels: they only exist after the sandbox has
+        // booted, and a label cannot be set on a running sandbox.
+        let stored = crate::state::load(handle.name()).ok().flatten();
+        let id = |value: Option<u64>| value.map_or_else(|| "-".to_string(), |id| id.to_string());
         println!(
             "{:<24} {:<12} {:<12} {:<12}",
             handle.name(),
             format!("{:?}", handle.status_snapshot()),
-            label(crate::state::AUTH_KEY_LABEL),
-            label(crate::state::SIGNING_KEY_LABEL),
+            id(stored.as_ref().and_then(|s| s.auth_key_id)),
+            id(stored.as_ref().and_then(|s| s.signing_key_id)),
         );
     }
     Ok(())

@@ -1,35 +1,24 @@
 //! `wbox destroy`: remove a sandbox and everything `create` registered for it.
 
-use std::collections::BTreeMap;
-
 use microsandbox::{Sandbox, sandbox::SandboxStatus};
 
-use crate::{
-    Res, create, github, runtime,
-    state::{self, AUTH_KEY_LABEL, SIGNING_KEY_LABEL},
-};
+use crate::{Res, create, github, runtime, state};
 
 /// `wbox destroy <name>`.
 ///
-/// Never starts the sandbox: the key ids come from the persisted labels or
-/// from the state file, both readable while it is stopped.
+/// Never starts the sandbox: the key ids come from the state file, which is
+/// readable whatever the sandbox is doing, and survives it entirely.
 pub async fn destroy(name: &str) -> Res<()> {
     runtime::ensure_runtime().await?;
 
     let handle = Sandbox::get(name).await.ok();
-    let labels: BTreeMap<String, String> = match &handle {
-        Some(handle) => handle.config()?.spec.labels.clone(),
-        None => BTreeMap::new(),
-    };
     let stored = state::load(name)?;
     if handle.is_none() && stored.is_none() {
         return Err(format!("no sandbox or state record named {name}").into());
     }
 
-    let auth_key_id =
-        key_id(&labels, AUTH_KEY_LABEL).or(stored.as_ref().and_then(|s| s.auth_key_id));
-    let signing_key_id =
-        key_id(&labels, SIGNING_KEY_LABEL).or(stored.as_ref().and_then(|s| s.signing_key_id));
+    let auth_key_id = stored.as_ref().and_then(|s| s.auth_key_id);
+    let signing_key_id = stored.as_ref().and_then(|s| s.signing_key_id);
 
     if let Some(id) = auth_key_id {
         eprintln!("wbox: deleting the GitHub authentication key");
@@ -56,10 +45,6 @@ pub async fn destroy(name: &str) -> Res<()> {
     state::remove(name)?;
     println!("sandbox {name} destroyed");
     Ok(())
-}
-
-fn key_id(labels: &BTreeMap<String, String>, key: &str) -> Option<u64> {
-    labels.get(key).and_then(|value| value.parse().ok())
 }
 
 /// Drop the `Host wbox-<name>` block from the wbox ssh config fragment.

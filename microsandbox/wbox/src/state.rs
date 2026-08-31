@@ -1,20 +1,16 @@
 //! What `wbox` remembers about a sandbox between commands.
 //!
-//! The GitHub key ids are stored twice: as sandbox labels (queryable, moves
-//! with the sandbox) and in a JSON file under the runtime home (survives a
-//! sandbox record that is already gone when `destroy` runs).
+//! The GitHub key ids live in a JSON file under the runtime home. They cannot
+//! be sandbox labels: a label is only settable before boot, and the ids do not
+//! exist until `provision.sh` has generated the key inside a running sandbox.
+//! The file also outlives a sandbox record that is already gone when `destroy`
+//! runs.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::{Res, runtime};
-
-/// Label carrying the GitHub authentication key id.
-pub const AUTH_KEY_LABEL: &str = "wbox.auth_key_id";
-
-/// Label carrying the GitHub signing key id.
-pub const SIGNING_KEY_LABEL: &str = "wbox.signing_key_id";
 
 /// The persisted record for one sandbox.
 #[derive(Debug, Clone, Serialize, Deserialize)]
