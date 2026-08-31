@@ -34,10 +34,11 @@ fn main() {
         eprintln!("wbox: {error}");
         std::process::exit(1);
     }
-    // `create` needs microsandbox/.env in the environment. Read it here, while
-    // the process is still single-threaded: writing the environment is unsound
-    // once the tokio runtime has spawned its workers.
-    if matches!(command, Command::Create { .. })
+    // Both commands that talk to GitHub need microsandbox/.env in the
+    // environment: create to register the sandbox key, destroy to remove it.
+    // Read it here, while the process is still single-threaded: writing the
+    // environment is unsound once the tokio runtime has spawned its workers.
+    if matches!(command, Command::Create { .. } | Command::Destroy { .. })
         && let Err(error) = create::load_env_file()
     {
         eprintln!("wbox: {error}");
