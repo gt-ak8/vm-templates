@@ -49,6 +49,13 @@ cargo run --release -- destroy mybox
   in the guest and no listening socket on the host — `wbox` is itself the SSH server, translating
   channels into agent execs, and writes nothing to stdout but the SSH stream.
 
+The generated block is a normal ssh host, so anything that takes an ssh target works against a
+sandbox: `herdr --remote wbox-<name>` is the equivalent of `herdr --remote lima-<instance>`. Host
+keys are deliberately not checked or recorded (`StrictHostKeyChecking no`,
+`UserKnownHostsFile /dev/null`): the only route to the guest is the ProxyCommand above, an
+in-process server with no network path to spoof, and recreating a sandbox under the same name
+brings a new key that `accept-new` would then refuse.
+
 ### Two scripts, not one
 
 `bootstrap.sh` is baked into the snapshot and holds only what every VM shares. `provision.sh` runs
