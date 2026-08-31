@@ -34,7 +34,7 @@ cargo run --release -- destroy mybox
   the `dev` user, single-user Nix, `home-manager switch`, claude/opencode/rustup/mise), stops the
   sandbox and snapshots it as `devstation-base`.
 - `create` and `build` open with a preflight: the payload files, the git identity, the base
-  snapshot, and that `GH_TOKEN` really carries `admin:public_key` and `write:ssh_signing_key`.
+  snapshot, and that `GH_TOKEN` really carries `admin:public_key` and `admin:ssh_signing_key`.
   All failures are reported at once, before anything boots.
 - `create <name> [--cpus N] [--memory MiB]` boots from that snapshot, bind-mounts
   `~/lima/claude` and `~/lima/agents`, injects `GH_TOKEN` as a secret, runs `provision.sh`,

@@ -37,19 +37,41 @@ pub fn register_key(endpoint: &str, title: &str, pubkey: &str) -> Res<u64> {
 }
 
 /// Delete key `id` at `endpoint`. A key that is already gone is not an error.
+///
+/// GitHub answers 404 both for a key that does not exist and for a token
+/// whose scopes do not cover the call, so a bare 404 cannot be read as
+/// success: doing that reports a clean `destroy` while leaving the key on the
+/// account. Every 404 is therefore confirmed with a read of the same path.
 pub fn delete_key(endpoint: &str, id: u64) -> Res<()> {
+    let path = format!("{endpoint}/{id}");
     let output = Command::new("gh")
-        .args(["api", "-X", "DELETE"])
-        .arg(format!("{endpoint}/{id}"))
+        .args(["api", "-X", "DELETE", &path])
         .output()
         .map_err(|e| format!("running gh (is it installed?): {e}"))?;
     if output.status.success() {
         return Ok(());
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
-    if stderr.contains("404") || stderr.contains("Not Found") {
-        eprintln!("wbox: {endpoint}/{id} was already gone");
-        return Ok(());
+    let failure = format!("gh api DELETE {path} failed: {}", stderr.trim());
+
+    // gh surfaces GitHub's own hint when a scope is the cause. Trust it before
+    // spending another request.
+    if stderr.contains("scope") {
+        return Err(failure.into());
     }
-    Err(format!("gh api DELETE {endpoint}/{id} failed: {}", stderr.trim()).into())
+    if !(stderr.contains("404") || stderr.contains("Not Found")) {
+        return Err(failure.into());
+    }
+
+    // The read needs only the `read:` half of the scope, which registering the
+    // key already proved. If it still finds the key, the delete was refused.
+    let probe = Command::new("gh")
+        .args(["api", &path])
+        .output()
+        .map_err(|e| format!("running gh (is it installed?): {e}"))?;
+    if probe.status.success() {
+        return Err(format!("{failure} (the key is still on the account)").into());
+    }
+    eprintln!("wbox: {path} was already gone");
+    Ok(())
 }

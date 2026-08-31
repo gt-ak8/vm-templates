@@ -14,7 +14,11 @@ use microsandbox::Snapshot;
 use crate::{Res, build::BASE_SNAPSHOT, github, runtime};
 
 /// Scopes a classic token needs to register and remove the sandbox key.
-const REQUIRED_SCOPES: [&str; 2] = ["admin:public_key", "write:ssh_signing_key"];
+///
+/// `admin:` on both, not `write:`: creating a signing key only needs
+/// `write:ssh_signing_key`, but `destroy` deletes it and GitHub accepts that
+/// call under `admin:ssh_signing_key` alone.
+const REQUIRED_SCOPES: [&str; 2] = ["admin:public_key", "admin:ssh_signing_key"];
 
 /// Files `build` copies into the base image.
 const BUILD_PAYLOAD: [&str; 3] = ["bootstrap.sh", "home", "vm-files"];
