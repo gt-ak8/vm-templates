@@ -52,5 +52,14 @@
         devstation = mkHome "aarch64-linux";
         "devstation-x86_64" = mkHome "x86_64-linux";
       };
+
+      # Re-exported so bootstrap.sh can run the home-manager CLI from this
+      # flake's lock. Resolving `home-manager/release-26.05` fresh instead
+      # calls the GitHub commits API unauthenticated, and the whole build dies
+      # with HTTP 403 whenever the host IP is over the anonymous rate limit.
+      packages = nixpkgs.lib.genAttrs [ "aarch64-linux" "x86_64-linux" ] (system: {
+        home-manager = home-manager.packages.${system}.home-manager;
+        default = home-manager.packages.${system}.home-manager;
+      });
     };
 }

@@ -113,9 +113,25 @@
     # ~/.zshenv: read by zsh for ALL invocations (interactive and not).
     # Nix + HM env sourced here so `ssh vm <cmd>` works.
     envExtra = ''
-      if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-      fi
+      # A wbox session arrives with LOGNAME but no USER: there is no sshd in
+      # the guest to set it, the in-process proxy hands the shell a minimal
+      # environment. nix.sh gates its whole body on USER being set, so without
+      # this it exports nothing at all.
+      export USER="''${USER:-''${LOGNAME:-$(id -un)}}"
+
+      # bootstrap.sh installs single-user Nix, whose profile script lives under
+      # ~/.nix-profile; the daemon path exists only on multi-user installs.
+      # Probing the daemon path alone left ~/.nix-profile/bin off PATH
+      # entirely, so every home-manager package (herdr, wt, ...) was
+      # unreachable, including over `ssh vm <cmd>`.
+      for _nix_profile in \
+        /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh \
+        "$HOME/.nix-profile/etc/profile.d/nix.sh"; do
+        if [ -e "$_nix_profile" ]; then
+          . "$_nix_profile"
+        fi
+      done
+      unset _nix_profile
       if [ -e "$HOME/.nix-profile/etc/profile.d/hm-session-vars.sh" ]; then
         . "$HOME/.nix-profile/etc/profile.d/hm-session-vars.sh"
       fi

@@ -97,13 +97,17 @@ as_dev '
 # `path:` prefix: nix reads all files in the dir without requiring git tracking
 # (the flake was copied in by `wbox build`, not cloned as a git repo).
 # `-b hm-bak` backs up pre-existing target files instead of aborting.
+# The CLI comes from this flake's own `packages.<system>.home-manager`, so it
+# is taken from flake.lock. Running `home-manager/release-26.05` instead
+# resolves that branch through the GitHub commits API on every build, with no
+# token, and fails the build outright once the host IP is rate limited.
 echo "==> Applying home-manager config (#$ATTR)"
 as_dev "
 	if command -v home-manager >/dev/null 2>&1; then
 		home-manager switch -b hm-bak --flake 'path:${FLAKE_DIR}#${ATTR}'
 	else
 		nix --extra-experimental-features 'nix-command flakes' \
-			run home-manager/release-26.05 -- \
+			run 'path:${FLAKE_DIR}#home-manager' -- \
 			switch -b hm-bak --flake 'path:${FLAKE_DIR}#${ATTR}'
 	fi
 "
@@ -124,12 +128,18 @@ as_dev '
 # hardcoded upstream). --no-modify-path: it would otherwise append to zshrc/
 # zshenv, which are read-only Home Manager symlinks; PATH is handled in
 # home.nix instead.
+#
+# Pinned: left to resolve "latest" the installer calls the GitHub API
+# unauthenticated, and the whole build fails with "Failed to fetch version
+# information" whenever this egress IP has hit the anonymous rate limit.
+# Only the seed version is pinned; opencode self-updates from here.
+OPENCODE_VERSION=1.18.25
 # shellcheck disable=SC2016 # $HOME etc. expand in the dev shell, not here
-as_dev '
-	if [ ! -x "$HOME/.opencode/bin/opencode" ]; then
-		curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path
+as_dev "
+	if [ ! -x \"\$HOME/.opencode/bin/opencode\" ]; then
+		curl -fsSL https://opencode.ai/install | VERSION=$OPENCODE_VERSION bash -s -- --no-modify-path
 	fi
-'
+"
 
 # --- 6. rust toolchain -----------------------------------------------------
 # rustup itself comes from Home Manager (read-only store); the toolchains it
