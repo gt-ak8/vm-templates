@@ -37,8 +37,9 @@ cargo run --release -- destroy mybox
   snapshot, and that `GH_TOKEN` really carries `admin:public_key` and `admin:ssh_signing_key`.
   All failures are reported at once, before anything boots.
 - `create <name> [--cpus N] [--memory MiB]` boots from that snapshot, bind-mounts
-  `~/lima/claude` and `~/lima/agents`, injects `GH_TOKEN` as a secret, runs `provision.sh`,
-  injects `GH_TOKEN` and, when set, `CLAUDE_CODE_OAUTH_TOKEN` as secrets,
+  `~/lima/claude` and `~/lima/agents` (the same host dirs the Lima templates share, so agent
+  config and installed skills are common to every VM), injects `GH_TOKEN` and, when set,
+  `CLAUDE_CODE_OAUTH_TOKEN` as secrets, runs `provision.sh`,
   registers the sandbox's key with GitHub at `/user/keys` and `/user/ssh_signing_keys`, and writes
   a `Host wbox-<name>` block into `~/.ssh/config.d/wbox`. The root disk is not settable here: it
   belongs to the OCI rootfs source, so a sandbox inherits the size baked into the snapshot.
@@ -61,6 +62,22 @@ they would have to be re-baked into the snapshot's upper. `create` therefore pus
 script into the running guest over the agent's filesystem channel
 (`sandbox.fs().copy_from_host(..)`) before executing it. The snapshot's build-time copy is only a
 fallback and a guarantee that `/opt/wbox` exists.
+
+### Claude Code in the sandbox
+
+Set `CLAUDE_CODE_OAUTH_TOKEN` in `microsandbox/.env` (from `claude setup-token`) and the guest is
+authenticated without ever holding the token: it sees `sk-ant-oat01-msb-placeholder`, which the
+interception proxy swaps for the real value on requests to `api.anthropic.com`.
+
+Two things make that the *only* credential in the VM:
+
+- `~/.claude/.credentials.json` in the shared mount holds your own OAuth tokens, for the Lima VMs.
+  It cannot be deleted host-side, so `create` binds an empty readonly stub over that one path.
+  This happens only when `CLAUDE_CODE_OAUTH_TOKEN` is set; without it the sandbox falls back to
+  the shared credentials, as before.
+- `~/.claude.json` is per-VM and not part of the mount, so a fresh sandbox has none of the flags
+  that mark onboarding done, and Claude Code opens on the theme picker, the login-method screen
+  and the bypass-permissions warning. `provision.sh` seeds them, only where absent.
 
 ## Where the runtime lives, and the symlink
 

@@ -32,6 +32,9 @@ const CLAUDE_API_HOST: &str = "api.anthropic.com";
 /// the proxy that would have substituted it.
 const CLAUDE_TOKEN_PLACEHOLDER: &str = "sk-ant-oat01-msb-placeholder";
 
+/// Claude Code's credentials file, inside the shared `~/.claude` mount.
+const CLAUDE_CREDENTIALS: &str = "/home/dev/.claude/.credentials.json";
+
 /// Default resources when `--cpus/--memory` are not given. The root disk is
 /// not among them: it is a property of the OCI rootfs source, so a
 /// snapshot-rooted sandbox inherits the size baked in at build time and the
@@ -52,8 +55,13 @@ pub async fn create(name: &str, opts: CreateOpts) -> Res<()> {
     let git_name = std::env::var("GIT_USER_NAME").unwrap_or_default();
     let git_email = std::env::var("GIT_USER_EMAIL").unwrap_or_default();
 
+    // Both host dirs are the ones the Lima templates already share, so config
+    // written by any VM is seen by all of them.
     let claude_mount = host_dir("lima/claude")?;
     let agents_mount = host_dir("lima/agents")?;
+    let claude_token = std::env::var(CLAUDE_TOKEN_VAR).unwrap_or_default();
+    let claude_token = claude_token.trim();
+    let credentials_stub = credentials_stub()?;
     authorize_host_key(name)?;
 
     eprintln!("wbox: creating {name} from {BASE_SNAPSHOT}");
@@ -83,22 +91,31 @@ pub async fn create(name: &str, opts: CreateOpts) -> Res<()> {
 
     // Optional: without it the sandbox falls back to the credentials in the
     // bind-mounted ~/.claude, which is the pre-token behaviour.
-    let claude_token = std::env::var(CLAUDE_TOKEN_VAR).unwrap_or_default();
-    let sandbox = if claude_token.trim().is_empty() {
+    let sandbox = if claude_token.is_empty() {
         eprintln!(
             "wbox: note: {CLAUDE_TOKEN_VAR} is not set; Claude Code will use whatever \
              credentials the mounted ~/.claude holds"
         );
         sandbox
     } else {
-        sandbox.secret(|s| {
-            s.env(CLAUDE_TOKEN_VAR)
-                .source(SecretSource::Env {
-                    var: CLAUDE_TOKEN_VAR.into(),
-                })
-                .placeholder(CLAUDE_TOKEN_PLACEHOLDER)
-                .allow_host(CLAUDE_API_HOST)
-        })
+        sandbox
+            .secret(|s| {
+                s.env(CLAUDE_TOKEN_VAR)
+                    .source(SecretSource::Env {
+                        var: CLAUDE_TOKEN_VAR.into(),
+                    })
+                    .placeholder(CLAUDE_TOKEN_PLACEHOLDER)
+                    .allow_host(CLAUDE_API_HOST)
+            })
+            // The shared ~/.claude holds the host's own OAuth tokens, and a
+            // sandbox has no business reading them: the whole point of the
+            // secret above is that the guest only ever sees a placeholder.
+            // The file cannot be deleted host-side (the Lima VMs authenticate
+            // with it), so an empty stub is bound over it. Readonly, so the
+            // guest cannot write credentials back into the shared dir either.
+            .volume(CLAUDE_CREDENTIALS, |m| {
+                m.bind(&credentials_stub).readonly()
+            })
     };
 
     let sandbox = sandbox.create_detached().await?;
@@ -187,6 +204,19 @@ pub fn load_env_file() -> Res<()> {
 }
 
 /// Resolve (and create) a host directory under `$HOME`.
+/// An empty credentials file, kept on the host, bound over the real one.
+///
+/// Rewritten every create: a stub someone edited into holding a token would
+/// silently undo the shadowing it exists for.
+fn credentials_stub() -> Res<PathBuf> {
+    let path = runtime::home()?.join("claude-credentials-stub.json");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, b"{}")?;
+    Ok(path)
+}
+
 fn host_dir(relative: &str) -> Res<PathBuf> {
     let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
     let path = Path::new(&home).join(relative);
