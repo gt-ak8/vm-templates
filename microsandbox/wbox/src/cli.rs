@@ -94,11 +94,9 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                     "--cpus" => opts.cpus = Some(parse_num(&mut it, "--cpus")?),
                     "--memory" => opts.memory = Some(parse_num(&mut it, "--memory")?),
                     "--disk" => {
-                        return Err(
-                            "--disk is not supported: a sandbox inherits the root disk \
+                        return Err("--disk is not supported: a sandbox inherits the root disk \
                              size of the base snapshot"
-                                .to_string(),
-                        );
+                            .to_string());
                     }
                     other if other.starts_with('-') => {
                         return Err(format!("unknown argument for create: {other}"));

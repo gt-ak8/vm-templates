@@ -4,7 +4,7 @@ use std::io::Write;
 
 use microsandbox::{Sandbox, Snapshot, sandbox::SandboxStatus, sandbox::exec::ExecEvent};
 
-use crate::{Res, runtime};
+use crate::{Res, preflight, runtime};
 
 /// The snapshot every sandbox is cut from.
 pub const BASE_SNAPSHOT: &str = "devstation-base";
@@ -17,6 +17,7 @@ const BASE_IMAGE: &str = "debian:13";
 
 /// `wbox build [--force]`.
 pub async fn build(force: bool) -> Res<()> {
+    preflight::build_preflight()?;
     runtime::ensure_runtime().await?;
 
     if Snapshot::get(BASE_SNAPSHOT).await.is_ok() {

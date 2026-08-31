@@ -7,6 +7,7 @@ mod cli;
 mod create;
 mod destroy;
 mod github;
+mod preflight;
 mod runtime;
 mod ssh;
 mod state;

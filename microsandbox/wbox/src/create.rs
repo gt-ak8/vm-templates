@@ -8,7 +8,7 @@ use crate::{
     Res,
     build::BASE_SNAPSHOT,
     cli::CreateOpts,
-    github, runtime,
+    github, preflight, runtime,
     state::{self, AUTH_KEY_LABEL, SIGNING_KEY_LABEL, State},
 };
 
@@ -31,9 +31,10 @@ pub async fn create(name: &str, opts: CreateOpts) -> Res<()> {
     // `microsandbox/.env` was already read into the environment by `main`,
     // before the tokio runtime existed: `set_var` is only sound while the
     // process is single-threaded (any other thread in a `getenv` races it).
-    if std::env::var("GH_TOKEN").is_err() {
-        return Err("GH_TOKEN is not set (add it to microsandbox/.env)".into());
-    }
+    // preflight proves GH_TOKEN exists, carries both key scopes, and that the
+    // base snapshot is there, so nothing below boots a sandbox it will have to
+    // throw away.
+    preflight::create_preflight().await?;
     let git_name = std::env::var("GIT_USER_NAME").unwrap_or_default();
     let git_email = std::env::var("GIT_USER_EMAIL").unwrap_or_default();
 
