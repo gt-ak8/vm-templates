@@ -119,6 +119,11 @@
       # this it exports nothing at all.
       export USER="''${USER:-''${LOGNAME:-$(id -un)}}"
 
+      # SHELL is missing for the same reason. Programs that spawn "the user's
+      # shell" from it fall back to /bin/sh, so herdr --remote opened plain sh
+      # panes with no zsh config and no starship prompt.
+      export SHELL="''${SHELL:-/usr/bin/zsh}"
+
       # bootstrap.sh installs single-user Nix, whose profile script lives under
       # ~/.nix-profile; the daemon path exists only on multi-user installs.
       # Probing the daemon path alone left ~/.nix-profile/bin off PATH
