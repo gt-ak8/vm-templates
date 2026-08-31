@@ -66,7 +66,41 @@ ln -sfn "$HOME/.agents/AGENTS.md" "$HOME/.codex/AGENTS.md"
 ln -sfn "$HOME/.agents/AGENTS.md" "$HOME/.pi/agent/AGENTS.md"
 ln -sfn "$HOME/.agents/AGENTS.md" "$HOME/.config/opencode/AGENTS.md"
 
-# --- 5. hand the public key back to the host ------------------------------
+# --- 5. get Claude Code past its first-run prompts -------------------------
+# ~/.claude is a host mount, so the credentials come along, but ~/.claude.json
+# is per-VM and starts without the flags that mark onboarding done. Claude
+# Code then opens on the theme picker, the login-method screen and the
+# bypass-permissions warning on every fresh sandbox. Seed the flags it checks.
+# Only missing keys are written, so a choice made inside the VM wins.
+echo "==> Seeding Claude Code first-run flags"
+python3 - "$HOME" <<'PYEOF'
+import json, os, sys
+
+home = sys.argv[1]
+path = os.path.join(home, ".claude.json")
+try:
+    with open(path) as handle:
+        config = json.load(handle)
+except (OSError, ValueError):
+    config = {}
+
+# bypassPermissionsModeAccepted: ~/.claude/settings.json runs the sandbox in
+# bypass mode, which otherwise demands an interactive acceptance.
+config.setdefault("hasCompletedOnboarding", True)
+config.setdefault("theme", "dark")
+config.setdefault("bypassPermissionsModeAccepted", True)
+# The trust dialog is per directory. $HOME covers the default landing spot;
+# other directories still prompt once, which is what that dialog is for.
+config.setdefault("projects", {}).setdefault(home, {}).setdefault(
+    "hasTrustDialogAccepted", True
+)
+
+with open(path, "w") as handle:
+    json.dump(config, handle, indent=2)
+os.chmod(path, 0o600)
+PYEOF
+
+# --- 6. hand the public key back to the host ------------------------------
 # `wbox create` reads this marked line off the exec output and registers the
 # key with GitHub twice: as an authentication key and as a signing key.
 echo "WBOX_PUBKEY $PUBKEY"
