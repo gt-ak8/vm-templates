@@ -15,8 +15,11 @@ const BUILDER_SANDBOX: &str = "devstation-builder";
 /// Base image the bootstrap runs on.
 const BASE_IMAGE: &str = "debian:13";
 
-/// `wbox build [--force]`.
-pub async fn build(force: bool) -> Res<()> {
+/// `wbox build [--force] [--disk <gib>]`.
+///
+/// `disk_gib` is the only place the root disk is sized: a snapshot-rooted
+/// sandbox inherits it and the SDK rejects `root_disk` on `create`.
+pub async fn build(force: bool, disk_gib: u32) -> Res<()> {
     preflight::build_preflight()?;
     runtime::ensure_runtime().await?;
 
@@ -45,13 +48,13 @@ pub async fn build(force: bool) -> Res<()> {
     }
 
     let payload = runtime::payload_dir();
-    eprintln!("wbox: booting {BASE_IMAGE} as {BUILDER_SANDBOX}");
+    eprintln!("wbox: booting {BASE_IMAGE} as {BUILDER_SANDBOX} with a {disk_gib} GiB root disk");
     let sandbox = Sandbox::builder(BUILDER_SANDBOX)
         .image(BASE_IMAGE)
         .replace()
         .cpus(4)
         .memory(8192u32)
-        .root_disk(40960u32)
+        .root_disk(disk_gib * 1024)
         // Deliberately unlabelled: `wbox list` shows the sandboxes a user
         // created, and this one is build scaffolding. `build --force` is what
         // cleans it up.

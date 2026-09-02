@@ -6,7 +6,7 @@ use crate::{Res, create, github, runtime, state};
 
 /// `wbox destroy <name>`.
 ///
-/// Never starts the sandbox: the key ids come from the state file, which is
+/// Never starts the sandbox: the key id comes from the state file, which is
 /// readable whatever the sandbox is doing, and survives it entirely.
 pub async fn destroy(name: &str) -> Res<()> {
     runtime::ensure_runtime().await?;
@@ -17,13 +17,8 @@ pub async fn destroy(name: &str) -> Res<()> {
         return Err(format!("no sandbox or state record named {name}").into());
     }
 
-    let auth_key_id = stored.as_ref().and_then(|s| s.auth_key_id);
     let signing_key_id = stored.as_ref().and_then(|s| s.signing_key_id);
 
-    if let Some(id) = auth_key_id {
-        eprintln!("wbox: deleting the GitHub authentication key");
-        github::delete_key(github::AUTH_KEYS_ENDPOINT, id)?;
-    }
     if let Some(id) = signing_key_id {
         eprintln!("wbox: deleting the GitHub signing key");
         github::delete_key(github::SIGNING_KEYS_ENDPOINT, id)?;

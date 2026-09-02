@@ -17,7 +17,8 @@ replaces `host-setup.sh` + `create.sh` + `destroy.sh` + `lima.yaml`.
   It is gitignored. The token is never printed, never written to the repo, and never stored in the
   durable sandbox config: it is referenced by name and read from the `wbox` process environment at
   each spawn.
-- an ssh public key under `~/.ssh` — `wbox ssh-proxy` authenticates you with it
+- an ssh public key under `~/.ssh` (`id_ed25519.pub`, `id_rsa.pub` or `id_ecdsa.pub`): it is the
+  only credential the guest's sshd accepts, so `create` refuses to run without one
 
 ## Flow
 
@@ -27,34 +28,50 @@ cargo run --release -- build          # bake the devstation-base snapshot (long,
 cargo run --release -- create mybox   # cut a sandbox from it
 ssh wbox-mybox                        # or: cargo run --release -- ssh mybox
 cargo run --release -- list
+cargo run --release -- stop mybox     # keeps the disk; start brings it back
+cargo run --release -- start mybox
 cargo run --release -- destroy mybox
 ```
 
-- `build [--force]` installs the runtime if missing, boots `debian:13`, runs `bootstrap.sh` (apt,
-  the `dev` user, single-user Nix, `home-manager switch`, claude/opencode/rustup/mise), stops the
+- `build [--force] [--disk GiB]` installs the runtime if missing, boots `debian:13` on a root disk
+  of the given size (default 50 GiB; every sandbox inherits it), runs `bootstrap.sh` (apt,
+  the `dev` user, sshd config, single-user Nix, `home-manager switch`, Claude Code + opencode, mise), stops the
   sandbox and snapshots it as `devstation-base`.
 - `create` and `build` open with a preflight: the payload files, the git identity, the base
-  snapshot, and that `GH_TOKEN` really carries `admin:public_key` and `admin:ssh_signing_key`.
+  snapshot, and that `GH_ADMIN_TOKEN` really carries `admin:ssh_signing_key`.
   All failures are reported at once, before anything boots.
-- `create <name> [--cpus N] [--memory MiB]` boots from that snapshot, bind-mounts
-  `~/lima/claude` and `~/lima/agents` (the same host dirs the Lima templates share, so agent
-  config and installed skills are common to every VM), injects `GH_TOKEN` and, when set,
+- `create <name> [--cpus N] [--memory MiB] [--ssh-port P] [--metrics]` boots from that snapshot, publishes
+  the guest's sshd on `127.0.0.1:P` (default: the first free port from 22200), bind-mounts
+  `~/.wbox/claude` and `~/.wbox/agents` (sandbox-only dirs, seeded from the Lima shares — see
+  below), injects `GH_TOKEN` and, when set,
   `CLAUDE_CODE_OAUTH_TOKEN` as secrets, runs `provision.sh`,
-  registers the sandbox's key with GitHub at `/user/keys` and `/user/ssh_signing_keys`, and writes
+  registers the sandbox's key with GitHub at `/user/ssh_signing_keys`, and writes
   a `Host wbox-<name>` block into `~/.ssh/config.d/wbox`. The root disk is not settable here: it
   belongs to the OCI rootfs source, so a sandbox inherits the size baked into the snapshot.
-- `destroy <name>` deletes both GitHub registrations, removes the sandbox and the ssh block. It
+- Runtime metrics sampling is off unless `--metrics` is given. The sampler runs once a second
+  and scans all guest RAM with `mincore` on a tokio worker, which blocks the runtime's I/O
+  driver for 100-190 ms per sample: ssh keystrokes and agent calls stall visibly and the
+  runtime burns ~15% of a core while the guest idles. Nothing in wbox reads the samples; they
+  only feed `MSB_HOME=~/.wbox/vm-templates msb metrics <name>`, so pass `--metrics` when you
+  need that for debugging. The setting is part of the stored spec, so it applies to `start`
+  too and changing it means destroying and recreating the sandbox.
+- `destroy <name>` deletes the GitHub registration, removes the sandbox and the ssh block. It
   never starts the sandbox, so it works on a stopped one.
-- `ssh-proxy <name>` is internal: the `ProxyCommand` in the generated ssh config. There is no sshd
-  in the guest and no listening socket on the host — `wbox` is itself the SSH server, translating
-  channels into agent execs, and writes nothing to stdout but the SSH stream.
+- `stop <name>` stops a sandbox and keeps everything else: disk, port, GitHub key, ssh block.
+  `start <name>` boots it again and relaunches sshd (the guest has no init to do it).
+- `ssh <name>` is `ssh wbox-<name>` with a check that the sandbox is running. It never starts one.
+
+The guest runs a real sshd (`openssh-server`, key-only, `dev` only, per-sandbox host keys generated
+by `provision.sh`), published on the host loopback only. An earlier design tunnelled ssh through the
+agent's virtio-console channel as a `ProxyCommand`; that channel stalls the byte stream every second
+or so and made typing lag, so it is gone.
 
 The generated block is a normal ssh host, so anything that takes an ssh target works against a
 sandbox: `herdr --remote wbox-<name>` is the equivalent of `herdr --remote lima-<instance>`. Host
 keys are deliberately not checked or recorded (`StrictHostKeyChecking no`,
-`UserKnownHostsFile /dev/null`): the only route to the guest is the ProxyCommand above, an
-in-process server with no network path to spoof, and recreating a sandbox under the same name
-brings a new key that `accept-new` would then refuse.
+`UserKnownHostsFile /dev/null`): the port is bound to `127.0.0.1`, so nothing off this machine can
+sit on it, and recreating a sandbox under the same name (and usually the same port) brings new
+host keys that `accept-new` would trust once and then refuse.
 
 ### Two scripts, not one
 
@@ -70,21 +87,111 @@ script into the running guest over the agent's filesystem channel
 (`sandbox.fs().copy_from_host(..)`) before executing it. The snapshot's build-time copy is only a
 fallback and a guarantee that `/opt/wbox` exists.
 
+### Git auth: the token, not the key
+
+Git in the sandbox reaches GitHub over HTTPS with `GH_TOKEN`. `home.nix` rewrites
+`git@github.com:` and `ssh://git@github.com/` to `https://github.com/`, so a remote written as ssh
+takes the same path, and `credential."https://github.com".helper` is `!gh auth git-credential`,
+which hands the token to git. Clone, fetch, pull and push are the only operations that talk to
+GitHub, and all four go through it; rebase, merge and commit are local and never authenticate.
+
+That is deliberate, and it is what makes an SSO-enforced org workable. A classic token is
+authorized for the org once through "Configure SSO" and every sandbox then inherits it. An SSH key
+has to be authorized *per key* through the web UI, there is no API for it
+(`/orgs/{org}/credential-authorizations` lists and revokes, it cannot create), and `create` mints a
+fresh key per sandbox — so the ssh route means a manual click every time. The only programmatic
+SSH alternative is an org SSH certificate authority, which needs GitHub Enterprise Cloud and an org
+owner to trust a CA key held on your Mac.
+
+Hence the token needs `workflow` alongside `repo` and `read:org`: without it a push touching
+`.github/workflows/**` is rejected.
+
+The per-sandbox ed25519 key is still generated and still registered, but as a **signing key only**
+(`/user/ssh_signing_keys`). Signing produces a signature GitHub verifies against your account; it
+never authenticates, so SSO has nothing to gate and there is no "Configure SSO" control on signing
+keys. `GH_ADMIN_TOKEN` therefore needs `admin:ssh_signing_key` and nothing more.
+
+The secret is injected as an environment variable, but only into processes the agent spawns. An
+ssh session gets its environment from sshd, so `provision.sh` writes the placeholders (never the
+tokens) to `~/.config/wbox/env`, which `~/.zshenv` sources. Without that, git prompts for a
+username at the first clone.
+
+Blast radius is unchanged by this: the same `GH_TOKEN` was already injected into every sandbox. If
+anything it narrows, because the guest only ever holds the `$MSB_GH_TOKEN` placeholder that the
+proxy substitutes on the way to `github.com`, whereas an ssh private key sits on the guest
+filesystem and works from anywhere once copied out.
+
 ### Claude Code in the sandbox
 
 Set `CLAUDE_CODE_OAUTH_TOKEN` in `microsandbox/.env` (from `claude setup-token`) and the guest is
 authenticated without ever holding the token: it sees `sk-ant-oat01-msb-placeholder`, which the
 interception proxy swaps for the real value on requests to `api.anthropic.com`.
 
-Two things make that the *only* credential in the VM:
+Three things make that the *only* credential in the VM:
 
-- `~/.claude/.credentials.json` in the shared mount holds your own OAuth tokens, for the Lima VMs.
-  It cannot be deleted host-side, so `create` binds an empty readonly stub over that one path.
-  This happens only when `CLAUDE_CODE_OAUTH_TOKEN` is set; without it the sandbox falls back to
-  the shared credentials, as before.
+- The mount is not the Lima share. Sandboxes get `~/.wbox/claude` and `~/.wbox/agents`, and
+  `create` copies an allowlist into them from `~/lima/claude` and `~/lima/agents` at every run:
+  `settings.json`, `CLAUDE.md`, `statusline-command.sh`, `hooks/`,
+  `skills/`, `output-styles/`, `plugins/`, `AGENTS.md` (`CLAUDE_SEED` in `create.rs`). Your own
+  `.credentials.json`, history, projects and sessions stay on the host side of that line. Edit the
+  Lima copies and the next `create` picks the change up; anything a sandbox writes into
+  `~/.wbox/claude` is left alone.
+- `~/.claude/.credentials.json` is never seeded, but Claude Code writes one as soon as anything
+  logs in, and every later sandbox would read it. When `CLAUDE_CODE_OAUTH_TOKEN` is set, `create`
+  binds an empty readonly stub over that path, so nothing is read from it and nothing written to
+  it. Without the token the sandbox has no Claude credential at all and has to log in, and what it
+  gets lands in `~/.wbox/claude`.
 - `~/.claude.json` is per-VM and not part of the mount, so a fresh sandbox has none of the flags
   that mark onboarding done, and Claude Code opens on the theme picker, the login-method screen
   and the bypass-permissions warning. `provision.sh` seeds them, only where absent.
+
+The token itself lives only in the gitignored `microsandbox/.env` and this process's environment.
+It is never written to a mount, and the guest only ever holds the placeholder.
+
+### opencode's Copilot credential
+
+opencode's GitHub Copilot provider has no env var and no `apiKey` setting: it is device-flow only,
+and the request to support a PAT (opencode issue #12258) was closed as not planned. So there is
+nothing to create for it and nothing to put in `.env`. Run `opencode auth login` **on the host**,
+once, and `create` carries the result into every sandbox.
+
+It reads `~/.local/share/opencode/auth.json`, takes the `access` value of the `github-copilot`
+entry, and registers it as a secret allowed for `api.githubcopilot.com`. `provision.sh` writes the
+guest's own `auth.json` holding only the `$MSB_COPILOT_TOKEN` placeholder, so opencode in the VM is
+authenticated without the credential ever being on the guest filesystem.
+
+One host, not two: opencode 1.18 sends the stored OAuth value straight through as a bearer token,
+with no exchange against `api.github.com` and no refresh in the request path, which is why the
+`refresh` value is never injected. `expires` is set far out for the same reason — nothing in the
+guest can refresh, and the host's `auth.json` is re-read at every `create`, so a rotated credential
+propagates on the next one.
+
+Reading opencode's store rather than `.env` is deliberate: opencode owns and rotates this
+credential, so a pasted copy would go stale without saying so. A host that has never run
+`opencode auth login` still creates sandboxes; preflight notes it and moves on.
+
+### Toolchains are per project, via mise
+
+The image ships no global `rustup`, no global `node`, no global `bun`. What it does ship is `mise`,
+with a config that carries no `[tools]` block: nothing is installed up front, and a repo pinning a
+version in `mise.toml`, `.tool-versions`, `.nvmrc`, `.python-version`, `.java-version` or
+`.go-version` gets it fetched on first use (`not_found_auto_install`). Its shims are on PATH for
+non-interactive shells too, so `ssh wbox-<name> npm test` resolves the project's node.
+
+A global toolchain in a disposable VM is one more thing to keep current for no gain. `sudo` is
+passwordless in the guest, so an apt package or a compiler is one command away when something needs
+one that mise does not manage.
+
+mise comes from `https://mise.run` in `bootstrap.sh`, not from nixpkgs. nixpkgs pins it per release
+channel — `nixos-26.05` stays on 2026.5.12 for the life of the channel — and the store is read-only,
+so `mise self-update` cannot work and a repo whose `mise.toml` sets `min_version` above the pin
+fails outright. Installed to `~/.local/bin` it updates itself. It is not version-pinned the way
+opencode is: mise's install script carries the version rather than looking it up, so there is no
+unauthenticated GitHub API call to be rate limited on.
+
+The agent CLIs are `claude` and `opencode`, both from their official installers (self-updating, in
+`~/.local/bin` and `~/.opencode/bin`). Both carry their own runtime, so neither depends on a system
+node.
 
 ## Where the runtime lives, and the symlink
 

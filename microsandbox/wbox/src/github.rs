@@ -1,10 +1,15 @@
 //! GitHub key registration through the `gh` CLI.
 //!
+//! Only the signing key is registered. Authentication is not an SSH concern
+//! here: git in the sandbox reaches GitHub over HTTPS with `GH_TOKEN`, which
+//! an SSO-enforced org authorizes once, whereas an SSH key would need
+//! authorizing per sandbox through the web UI with no API to do it.
+//!
 //! Two tokens, deliberately: this module runs on the host and needs
-//! `admin:public_key` and `admin:ssh_signing_key` to add and remove the
-//! sandbox key. That authority must not reach the guest, so it lives in
-//! `GH_ADMIN_TOKEN` and is passed to `gh` per call. `GH_TOKEN` is the narrow
-//! token injected into the sandbox and is never used here.
+//! `admin:ssh_signing_key` to add and remove the sandbox key. That authority
+//! must not reach the guest, so it lives in `GH_ADMIN_TOKEN` and is passed to
+//! `gh` per call. `GH_TOKEN` is the narrow token injected into the sandbox and
+//! is never used here.
 //!
 //! The token is never logged, never passed as an argument (arguments are
 //! world-readable in the process table) and never written to disk.
@@ -36,9 +41,6 @@ pub fn gh_admin(args: &[&str]) -> Res<Command> {
         .env_remove("GITHUB_TOKEN");
     Ok(command)
 }
-
-/// Endpoint for authentication (push/pull) keys.
-pub const AUTH_KEYS_ENDPOINT: &str = "/user/keys";
 
 /// Endpoint for commit-signing keys.
 pub const SIGNING_KEYS_ENDPOINT: &str = "/user/ssh_signing_keys";

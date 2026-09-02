@@ -11,14 +11,15 @@ use std::process::Command;
 
 use microsandbox::Snapshot;
 
-use crate::{Res, build::BASE_SNAPSHOT, github, runtime};
+use crate::{Res, build::BASE_SNAPSHOT, create, github, runtime};
 
 /// Scopes the host-side admin token needs to register and remove the key.
 ///
-/// `admin:` on both, not `write:`: creating a signing key only needs
+/// Only the signing namespace: the sandbox key is never registered for
+/// authentication. `admin:`, not `write:`: creating a signing key only needs
 /// `write:ssh_signing_key`, but `destroy` deletes it and GitHub accepts that
 /// call under `admin:ssh_signing_key` alone.
-const ADMIN_SCOPES: [&str; 2] = ["admin:public_key", "admin:ssh_signing_key"];
+const ADMIN_SCOPES: [&str; 1] = ["admin:ssh_signing_key"];
 
 /// Files `build` copies into the base image.
 const BUILD_PAYLOAD: [&str; 3] = ["bootstrap.sh", "home", "vm-files"];
@@ -37,6 +38,7 @@ pub async fn create_preflight() -> Res<()> {
     let mut problems = Vec::new();
     check_payload(&["provision.sh"], &mut problems);
     check_git_identity(&mut problems);
+    check_copilot();
     check_github(&mut problems);
     check_snapshot(&mut problems).await;
     report(problems)
@@ -60,6 +62,24 @@ fn check_git_identity(problems: &mut Vec<String>) {
                  unattributed and signature verification needs the address"
             ));
         }
+    }
+}
+
+/// Note, never a failure, when the host has no Copilot credential to pass on.
+///
+/// opencode is one CLI among several in the image, and a sandbox without a
+/// Copilot login is a working sandbox. Saying it here rather than at the end
+/// of a create means the fix is known before the boot, not after it.
+fn check_copilot() {
+    if std::env::var(create::COPILOT_TOKEN_VAR)
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
+    {
+        eprintln!(
+            "wbox: note: no Copilot credential found on the host; run `opencode auth login` \
+             if you want opencode authenticated in the sandbox"
+        );
     }
 }
 
@@ -105,18 +125,17 @@ fn check_admin_token(problems: &mut Vec<String>) {
         // A fine-grained token sends no scope header. Its write permissions
         // cannot be read off a GET, so probe what is provable and say so.
         None => {
-            for endpoint in [github::AUTH_KEYS_ENDPOINT, github::SIGNING_KEYS_ENDPOINT] {
-                let readable = github::gh_admin(&["api", endpoint])
-                    .and_then(|mut c| Ok(c.output()?))
-                    .map(|out| out.status.success())
-                    .unwrap_or(false);
-                if !readable {
-                    problems.push(format!(
-                        "{} cannot read {endpoint}; it needs read and write access to that key \
-                         namespace",
-                        github::ADMIN_TOKEN_VAR
-                    ));
-                }
+            let endpoint = github::SIGNING_KEYS_ENDPOINT;
+            let readable = github::gh_admin(&["api", endpoint])
+                .and_then(|mut c| Ok(c.output()?))
+                .map(|out| out.status.success())
+                .unwrap_or(false);
+            if !readable {
+                problems.push(format!(
+                    "{} cannot read {endpoint}; it needs read and write access to that key \
+                     namespace",
+                    github::ADMIN_TOKEN_VAR
+                ));
             }
             eprintln!(
                 "wbox: note: {} advertises no scopes (fine-grained token). Read access was \
@@ -148,8 +167,8 @@ fn check_sandbox_token(problems: &mut Vec<String>) {
     if !excessive.is_empty() {
         eprintln!(
             "wbox: warning: {} carries {}. That token is injected into the sandbox, so it \
-             should hold only what the gh CLI needs there (repo, read:org). Keep the key-admin \
-             scopes in {}.",
+             should hold only what git and the gh CLI need there (repo, read:org, workflow). \
+             Keep the key-admin scopes in {}.",
             github::SANDBOX_TOKEN_VAR,
             excessive.join(" and "),
             github::ADMIN_TOKEN_VAR

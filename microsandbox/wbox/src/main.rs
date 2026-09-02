@@ -60,11 +60,12 @@ fn run(command: Command) -> Res<()> {
 async fn dispatch(command: Command) -> Res<()> {
     match command {
         Command::Help => Ok(()),
-        Command::Build { force } => build::build(force).await,
+        Command::Build { force, disk_gib } => build::build(force, disk_gib).await,
         Command::Create { name, opts } => create::create(&name, opts).await,
         Command::Destroy { name } => destroy::destroy(&name).await,
         Command::List => runtime::list().await,
+        Command::Start { name } => ssh::start(&name).await,
+        Command::Stop { name } => ssh::stop(&name).await,
         Command::Ssh { name } => ssh::ssh(&name).await,
-        Command::SshProxy { name } => ssh::ssh_proxy(&name).await,
     }
 }

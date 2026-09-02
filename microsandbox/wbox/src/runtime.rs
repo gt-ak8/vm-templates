@@ -118,24 +118,30 @@ pub async fn list() -> Res<()> {
     ensure_runtime().await?;
     let page = Sandbox::list_with(|l| l.label(WBOX_LABEL.0, WBOX_LABEL.1)).await?;
     println!(
-        "{:<24} {:<12} {:<12} {:<12}",
-        "NAME", "STATUS", "AUTH KEY", "SIGN KEY"
+        "{:<24} {:<12} {:<10} {:<12}",
+        "NAME", "STATUS", "SSH PORT", "SIGN KEY"
     );
-    if page.sandboxes.is_empty() {
-        println!("no wbox sandboxes");
-        return Ok(());
-    }
     for handle in &page.sandboxes {
-        // The key ids are not labels: they only exist after the sandbox has
+        // The key id is not a label: it only exists after the sandbox has
         // booted, and a label cannot be set on a running sandbox.
         let stored = crate::state::load(handle.name()).ok().flatten();
-        let id = |value: Option<u64>| value.map_or_else(|| "-".to_string(), |id| id.to_string());
+        let or_dash = |value: Option<String>| value.unwrap_or_else(|| "-".to_string());
         println!(
-            "{:<24} {:<12} {:<12} {:<12}",
+            "{:<24} {:<12} {:<10} {:<12}",
             handle.name(),
             format!("{:?}", handle.status_snapshot()),
-            id(stored.as_ref().and_then(|s| s.auth_key_id)),
-            id(stored.as_ref().and_then(|s| s.signing_key_id)),
+            or_dash(
+                stored
+                    .as_ref()
+                    .and_then(|s| s.ssh_port)
+                    .map(|p| p.to_string())
+            ),
+            or_dash(
+                stored
+                    .as_ref()
+                    .and_then(|s| s.signing_key_id)
+                    .map(|id| id.to_string())
+            ),
         );
     }
     Ok(())

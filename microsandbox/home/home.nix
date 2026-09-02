@@ -27,28 +27,19 @@
     jq
     just
     gh
-    lazygit
-    codex
-    pi-coding-agent
     herdr-pkg
-    # Rust: rustup, not the nixpkgs rustc/cargo. Toolchains live in ~/.rustup
-    # (writable), so a project's rust-toolchain.toml is honored and
-    # `rustup update` works. bootstrap.sh seeds a stable toolchain.
-    rustup
-    # Node: the `nodejs` attr tracks the current LTS in nixpkgs (24.x on
-    # nixos-26.05). Ships npm. Global installs go to ~/.npm-global (see
-    # NPM_CONFIG_PREFIX below), the store being read-only. This is the fallback
-    # `node` outside a project; mise overrides it inside a repo that pins a
-    # version (see below).
-    nodejs
-    # mise: per-project language/toolchain versions. Same pattern as rustup -
-    # the binary is read-only from the store, but the toolchains it installs
-    # live in ~/.local/share/mise (writable). Reads a repo's mise.toml /
-    # .tool-versions / .nvmrc / .python-version / ... and, with
-    # not_found_auto_install, fetches the pinned version on first use. Shell
-    # hook is wired in initContent; global config seeded by bootstrap.sh.
-    mise
   ];
+
+  # mise is deliberately NOT managed here, for the same reason as claude-code:
+  # nixpkgs pins it per release channel (nixos-26.05 is stuck on 2026.5.12) and
+  # the store is read-only, so `mise self-update` cannot work and a project's
+  # `min_version` starts failing. bootstrap.sh installs it from mise.run into
+  # ~/.local/bin instead, where it updates itself.
+
+  # No *global* language toolchains on purpose: no rustup, no nodejs, no bun
+  # default. A project declares what it needs and mise fetches it on first use.
+  # A global toolchain in the image is one more thing to keep current for a VM
+  # that is thrown away anyway.
 
   # claude-code is deliberately NOT managed here: the nix store is read-only so
   # its self-update cannot work. bootstrap.sh installs it via the official
@@ -56,12 +47,10 @@
 
   home.sessionVariables = {
     EDITOR = "nano";
-    # `npm i -g` would target the read-only store prefix. Redirect it to a
-    # writable dir; its bin/ is added to PATH in zshenv below.
-    NPM_CONFIG_PREFIX = "/home/dev/.npm-global";
     # microsandbox secret injection intercepts TLS, so everything must trust
-    # the interception CA. Runtimes that ship their own root store (node) need
-    # to be pointed at the system bundle explicitly.
+    # the interception CA. Runtimes that ship their own root store (Claude
+    # Code's bundled node, any node a project brings in) need to be pointed at
+    # the system bundle explicitly.
     SSL_CERT_FILE = "/etc/ssl/certs/ca-certificates.crt";
     NODE_EXTRA_CA_CERTS = "/etc/ssl/certs/ca-certificates.crt";
   };
@@ -81,10 +70,13 @@
     enable = true;
 
     # SSH commit signing. Each sandbox generates its own ed25519 key and
-    # registers it with GitHub as a signing key. Identity + signing key are NOT
-    # in this repo: provision.sh writes ~/.config/git/identity.inc (and the
-    # allowed_signers file) from the host-side .env. A missing include is
-    # silently ignored by git, so the flake builds without it.
+    # registers it with GitHub as a signing key only: signing needs no
+    # authentication, so an SSO-enforced org has nothing to authorize. Git talks
+    # to GitHub over HTTPS with the token instead (see below). Identity +
+    # signing key are NOT in this repo: provision.sh writes
+    # ~/.config/git/identity.inc (and the allowed_signers file) from the
+    # host-side .env. A missing include is silently ignored by git, so the flake
+    # builds without it.
     signing = {
       format = "ssh";
       signByDefault = true;
@@ -97,7 +89,22 @@
       core.autocrlf = "input";
       tag.gpgSign = true;
       gpg.ssh.allowedSignersFile = "/home/dev/.config/git/allowed_signers";
-      url."git@github.com:".insteadOf = "https://github.com/";
+      # Everything that talks to GitHub goes over HTTPS with GH_TOKEN, which
+      # is the one credential an SSO-enforced org can be made to accept without
+      # a per-sandbox click: a classic token is authorized once through
+      # "Configure SSO", an SSH key would need it per key and no API can do it.
+      # The rewrites catch remotes that were written as ssh (`git clone
+      # git@...`, a submodule URL, a .git/config copied in) so they take the
+      # same path.
+      url."https://github.com/".insteadOf = [
+        "git@github.com:"
+        "ssh://git@github.com/"
+      ];
+      # `gh` reads GH_TOKEN and hands it to git as the password. In the guest
+      # that variable holds the $MSB_GH_TOKEN placeholder, not the token: the
+      # sandbox proxy substitutes the real value on the way out to github.com,
+      # so the credential is never on the guest filesystem or in its memory.
+      credential."https://github.com".helper = "!gh auth git-credential";
       credential.helper = "cache --timeout=86400";
       diff.colorMoved = "default";
       merge.conflictstyle = "zdiff3";
@@ -113,15 +120,15 @@
     # ~/.zshenv: read by zsh for ALL invocations (interactive and not).
     # Nix + HM env sourced here so `ssh vm <cmd>` works.
     envExtra = ''
-      # A wbox session arrives with LOGNAME but no USER: there is no sshd in
-      # the guest to set it, the in-process proxy hands the shell a minimal
-      # environment. nix.sh gates its whole body on USER being set, so without
-      # this it exports nothing at all.
+      # An ssh session has USER and SHELL from sshd. A shell started over the
+      # microsandbox agent (wbox's execs, msb exec) arrives with LOGNAME and a
+      # minimal environment instead. nix.sh gates its whole body on USER being
+      # set, so without this it exports nothing at all there.
       export USER="''${USER:-''${LOGNAME:-$(id -un)}}"
 
-      # SHELL is missing for the same reason. Programs that spawn "the user's
-      # shell" from it fall back to /bin/sh, so herdr --remote opened plain sh
-      # panes with no zsh config and no starship prompt.
+      # SHELL is missing in the same sessions. Programs that spawn "the user's
+      # shell" from it fall back to /bin/sh: plain sh, no zsh config, no
+      # starship prompt.
       export SHELL="''${SHELL:-/usr/bin/zsh}"
 
       # bootstrap.sh installs single-user Nix, whose profile script lives under
@@ -141,12 +148,18 @@
         . "$HOME/.nix-profile/etc/profile.d/hm-session-vars.sh"
       fi
 
-      # Native-installer bins (claude, opencode), rustup's shims (cargo,
-      # rustc, ...), npm's global bin, and mise's shims (bun, node, ... for
-      # tools mise manages) in PATH for non-interactive shells too, so
-      # `ssh vm claude ...`, `ssh vm cargo test` and `ssh vm bun install` work.
-      # The interactive `mise activate` (initContent) does not run for these.
-      export PATH="$PATH:$HOME/.local/bin:$HOME/.opencode/bin:$HOME/.cargo/bin:$HOME/.npm-global/bin:$HOME/.local/share/mise/shims"
+      # Sandbox secrets are injected only into agent-spawned processes, so an
+      # ssh session would have no GH_TOKEN and git would prompt for a password.
+      # provision.sh writes the placeholders (never the tokens) here.
+      if [ -e "$HOME/.config/wbox/env" ]; then
+        . "$HOME/.config/wbox/env"
+      fi
+
+      # Native-installer bins (claude, opencode, mise) and mise's shims (node
+      # and friends, for whatever a project pins) in PATH for non-interactive
+      # shells too, so `ssh vm claude ...` and `ssh vm npm test` work. The
+      # interactive `mise activate` (initContent) does not run for these.
+      export PATH="$PATH:$HOME/.local/bin:$HOME/.opencode/bin:$HOME/.local/share/mise/shims"
     '';
 
     initContent = ''
@@ -165,7 +178,6 @@
       pull = "git pull";
       m = "git switch main";
       cc = "claude --dangerously-skip-permissions";
-      co = "codex --full-auto";
     };
   };
 

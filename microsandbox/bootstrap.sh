@@ -45,15 +45,19 @@ as_dev() {
 
 # --- 1. system bits Home Manager cannot own on Debian ---------------------
 # Nix needs curl+xz; zsh is the login shell (HM writes ~/.zshrc but cannot
-# chsh on non-NixOS); gnupg for key ops. build-essential + python3 are the
-# node-gyp toolchain: npm packages with native addons compile on first run and
-# fail with "not found: make" without them. sudo so the dev user can install
-# apt packages later without a root shell.
+# chsh on non-NixOS); python3 runs provision.sh's Claude first-run seeding;
+# build-essential + python3 are the node-gyp toolchain (make, g++): npm
+# packages with native addons compile on first run and fail with
+# "not found: make" without them, same as in the Lima template;
+# sudo so the dev user can install apt packages later (a language runtime a
+# project needs) without a root shell; openssh-server is how the host gets in
+# (section 3), procps for the pgrep that guards its start.
 echo "==> Installing apt prerequisites"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y \
-	curl ca-certificates git xz-utils zsh gnupg build-essential python3 sudo
+	curl ca-certificates git xz-utils zsh python3 sudo build-essential \
+	openssh-server procps
 
 # --- 2. the dev user -------------------------------------------------------
 if ! id -u "$DEV_USER" >/dev/null 2>&1; then
@@ -67,7 +71,22 @@ echo "==> Granting passwordless sudo to $DEV_USER"
 echo "$DEV_USER ALL=(ALL) NOPASSWD:ALL" >"/etc/sudoers.d/90-$DEV_USER"
 chmod 0440 "/etc/sudoers.d/90-$DEV_USER"
 
-# --- 3. Nix (single-user, no daemon) --------------------------------------
+# --- 3. sshd ---------------------------------------------------------------
+# The guest runs a real sshd on 22; `wbox create` publishes it on a loopback
+# port of the host. Key-only, dev only. Nothing starts it here: the guest has
+# no init, so `wbox create` and `wbox start` launch it through the agent.
+echo "==> Configuring sshd"
+cat >/etc/ssh/sshd_config.d/wbox.conf <<EOF
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+AllowUsers $DEV_USER
+EOF
+# apt generated host keys; baked in, every sandbox cut from this snapshot
+# would present the same ones. provision.sh generates a set per sandbox.
+rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub
+
+# --- 4. Nix (single-user, no daemon) --------------------------------------
 # Single-user: a microVM sandbox has no init managing nix-daemon, and the store
 # only ever serves the one dev user. /nix is created up front so the installer
 # does not need to sudo for it.
@@ -93,7 +112,7 @@ as_dev '
 	fi
 '
 
-# --- 4. home-manager switch ------------------------------------------------
+# --- 5. home-manager switch ------------------------------------------------
 # `path:` prefix: nix reads all files in the dir without requiring git tracking
 # (the flake was copied in by `wbox build`, not cloned as a git repo).
 # `-b hm-bak` backs up pre-existing target files instead of aborting.
@@ -112,7 +131,7 @@ as_dev "
 	fi
 "
 
-# --- 5. claude code (official installer, not nix) -------------------------
+# --- 6. self-updating tools (official installers, not nix) ----------------
 # Kept out of Home Manager: the nix store is read-only so Claude Code's
 # self-update cannot work there. The installer drops versions in
 # ~/.local/share/claude/versions and points ~/.local/bin/claude at the current
@@ -141,30 +160,32 @@ as_dev "
 	fi
 "
 
-# --- 6. rust toolchain -----------------------------------------------------
-# rustup itself comes from Home Manager (read-only store); the toolchains it
-# manages live in ~/.rustup, so this only has to seed a default one. minimal
-# profile + rustfmt/clippy: skips rust-docs (~100MB) nobody reads in a VM.
-echo "==> Seeding the stable Rust toolchain"
+# mise: also out of Home Manager, and for a sharper reason than self-update
+# convenience. nixpkgs pins it per release channel, so nixos-26.05 is stuck on
+# 2026.5.12 for the life of the channel, and a repo whose mise.toml sets
+# `min_version` above that fails outright. From mise.run it lands in
+# ~/.local/bin (already on PATH) and `mise self-update` works.
+#
+# Not pinned, unlike opencode above: the version is baked into the install
+# script rather than looked up, so there is no unauthenticated GitHub API call
+# to be rate limited on. Set MISE_VERSION to pin a build if you ever need to.
+echo "==> Installing mise"
 # shellcheck disable=SC2016 # $HOME etc. expand in the dev shell, not here
 as_dev '
-	RUSTUP="$HOME/.nix-profile/bin/rustup"
-	if [ -x "$RUSTUP" ] && ! "$RUSTUP" toolchain list 2>/dev/null | grep -q "^stable"; then
-		"$RUSTUP" toolchain install stable \
-			--profile minimal --component rustfmt --component clippy
-		"$RUSTUP" default stable
+	if [ ! -x "$HOME/.local/bin/mise" ]; then
+		curl -fsSL https://mise.run | sh
 	fi
 '
 
 # --- 7. mise (per-project language/toolchain versions) --------------------
-# mise itself comes from Home Manager (read-only store); the toolchains it
-# installs live in ~/.local/share/mise (writable), same split as rustup. This
-# only seeds a writable global config: settings + a default bun (bun is not in
-# nixpkgs, unlike Node).
-echo "==> Seeding the global mise config + bun default"
+# The binary is installed in section 6; the toolchains it installs live in
+# ~/.local/share/mise (writable). This only seeds a writable global config. No
+# `[tools]` block: nothing is installed globally, a project declares what it
+# needs and mise fetches it on first use.
+echo "==> Seeding the global mise config"
 # shellcheck disable=SC2016 # $HOME etc. expand in the dev shell, not here
 as_dev '
-	MISE="$HOME/.nix-profile/bin/mise"
+	MISE="$HOME/.local/bin/mise"
 	if [ -x "$MISE" ] && [ ! -f "$HOME/.config/mise/config.toml" ]; then
 		mkdir -p "$HOME/.config/mise"
 		cat >"$HOME/.config/mise/config.toml" <<TOML
@@ -173,17 +194,9 @@ as_dev '
 # erroring, so entering a repo that pins e.g. node@20 just works.
 not_found_auto_install = true
 # Honor legacy per-language version files, not only mise.toml/.tool-versions:
-# .nvmrc, .node-version, .python-version, .java-version, .go-version. Rust is
-# left out on purpose: rustup owns rust-toolchain.toml.
+# .nvmrc, .node-version, .python-version, .java-version, .go-version.
 idiomatic_version_file_enable_tools = ["node", "python", "java", "go"]
-
-[tools]
-# Global default so \`bun\` works in any project. A repo pinning a specific bun
-# (mise.toml / .tool-versions) overrides this.
-bun = "latest"
 TOML
-		"$MISE" install
-		"$MISE" reshim
 	fi
 '
 

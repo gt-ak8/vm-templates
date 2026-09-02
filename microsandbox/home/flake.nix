@@ -29,7 +29,6 @@
         let
           pkgs = import nixpkgs {
             inherit system;
-            config.allowUnfree = true; # codex, pi-coding-agent are unfree
           };
           prebuilt = import ./prebuilt.nix { inherit pkgs; };
         in
