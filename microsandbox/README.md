@@ -1,37 +1,46 @@
 # microsandbox devstation
 
 A second devstation substrate: the same Debian 13 + Home Manager payload as the Lima devstation
-template, booted on [microsandbox](https://crates.io/crates/microsandbox) microVMs instead of Lima. It is
-self-contained — it reads and writes nothing outside this directory.
+template, booted on [microsandbox](https://crates.io/crates/microsandbox) microVMs instead of Lima. Its
+own data stays under this directory: the runtime, the state records and the per-sandbox mounts live
+in the gitignored `.runtime/`. Outside it, `create` reads `~/lima/claude` and `~/lima/agents` (the
+seed), `~/.ssh/*.pub` and opencode's `~/.local/share/opencode/auth.json`, and writes
+`~/.ssh/config.d/wbox` plus one `Include` line in `~/.ssh/config`. `~/.wbox/<repo-dir>` is a
+symlink into `.runtime` (see "Where the runtime lives").
 
-The entry point is `wbox` (work box), a small Rust binary over the `microsandbox` crate 0.6.15. It
+The entry point is `wbox` (work box), a small Rust binary over the `microsandbox` crate 0.6.16. It
 replaces `host-setup.sh` + `create.sh` + `destroy.sh` + `lima.yaml`.
 
 ## Prerequisites
 
 - macOS on arm64 (Apple silicon), with a working `libkrun` hypervisor path
-- `cargo` (the crate builds on edition 2024)
+- `cargo` (the crate builds on edition 2024) and `just`
 - `nix` on the host only to inspect the flake; the guest installs its own
-- `gh`, authenticated or reachable with the token below
-- `microsandbox/.env`, copied from `env.example`: `GH_TOKEN`, `GIT_USER_NAME`, `GIT_USER_EMAIL`.
-  It is gitignored. The token is never printed, never written to the repo, and never stored in the
-  durable sandbox config: it is referenced by name and read from the `wbox` process environment at
-  each spawn.
+- `gh` on PATH; the tokens below authenticate it
+- `microsandbox/.env`, copied from `env.example`: `GH_ADMIN_TOKEN`, `GH_TOKEN`, `GIT_USER_NAME`,
+  `GIT_USER_EMAIL`, and optionally `CLAUDE_CODE_OAUTH_TOKEN`. Preflight fails without the first four.
+  It is gitignored. The tokens are never printed, never written to the repo, and never stored in
+  the durable sandbox config: each is referenced by name and read from the `wbox` process
+  environment at each spawn, which is why `start` reads `.env` as well as `create` and `destroy`.
 - an ssh public key under `~/.ssh` (`id_ed25519.pub`, `id_rsa.pub` or `id_ecdsa.pub`): it is the
   only credential the guest's sshd accepts, so `create` refuses to run without one
 
 ## Flow
 
 ```sh
-cd microsandbox/wbox
-cargo run --release -- build          # bake the devstation-base snapshot (long, several GB)
-cargo run --release -- create mybox   # cut a sandbox from it
-ssh wbox-mybox                        # or: cargo run --release -- ssh mybox
-cargo run --release -- list
-cargo run --release -- stop mybox     # keeps the disk; start brings it back
-cargo run --release -- start mybox
-cargo run --release -- destroy mybox
+just wbox install    # cargo build --release, then symlink into ~/.local/bin (WBOX_BIN_DIR overrides)
+wbox build           # bake the devstation-base snapshot (long, several GB)
+wbox create mybox    # cut a sandbox from it
+ssh wbox-mybox       # or: wbox ssh mybox
+wbox list
+wbox stop mybox      # keeps the disk; start brings it back
+wbox start mybox
+wbox destroy mybox
+just wbox check      # fmt-check, clippy -D warnings, tests
 ```
+
+The root `justfile` imports `microsandbox/justfile` as the `wbox` module; `just wbox` lists its
+recipes.
 
 - `build [--force] [--disk GiB]` installs the runtime if missing, boots `debian:13` on a root disk
   of the given size (default 50 GiB; every sandbox inherits it), runs `bootstrap.sh` (apt,
@@ -41,13 +50,14 @@ cargo run --release -- destroy mybox
   snapshot, and that `GH_ADMIN_TOKEN` really carries `admin:ssh_signing_key`.
   All failures are reported at once, before anything boots.
 - `create <name> [--cpus N] [--memory MiB] [--ssh-port P] [--metrics]` boots from that snapshot, publishes
-  the guest's sshd on `127.0.0.1:P` (default: the first free port from 22200), bind-mounts
-  `~/.wbox/claude` and `~/.wbox/agents` (sandbox-only dirs, seeded from the Lima shares — see
-  below), injects `GH_TOKEN` and, when set,
-  `CLAUDE_CODE_OAUTH_TOKEN` as secrets, runs `provision.sh`,
-  registers the sandbox's key with GitHub at `/user/ssh_signing_keys`, and writes
-  a `Host wbox-<name>` block into `~/.ssh/config.d/wbox`. The root disk is not settable here: it
-  belongs to the OCI rootfs source, so a sandbox inherits the size baked into the snapshot.
+  the guest's sshd on `127.0.0.1:P` (default: the first free port from 22200), bind-mounts the
+  sandbox's own `.runtime/wbox-mounts/<name>/{claude,agents}` (seeded from the Lima shares, see
+  below), injects `GH_TOKEN` and, when set, `CLAUDE_CODE_OAUTH_TOKEN` as secrets, pushes
+  `provision.sh` and `vm-files/` into the guest and runs the script, registers the sandbox's key
+  with GitHub at `/user/ssh_signing_keys`, and writes a `Host wbox-<name>` block into
+  `~/.ssh/config.d/wbox`. A name that already has a sandbox or a state record is refused before
+  anything is written. The root disk is not settable here: it belongs to the OCI rootfs source, so
+  a sandbox inherits the size baked into the snapshot.
 - Runtime metrics sampling is off unless `--metrics` is given. The sampler runs once a second
   and scans all guest RAM with `mincore` on a tokio worker, which blocks the runtime's I/O
   driver for 100-190 ms per sample: ssh keystrokes and agent calls stall visibly and the
@@ -55,8 +65,11 @@ cargo run --release -- destroy mybox
   only feed `MSB_HOME=~/.wbox/vm-templates msb metrics <name>`, so pass `--metrics` when you
   need that for debugging. The setting is part of the stored spec, so it applies to `start`
   too and changing it means destroying and recreating the sandbox.
-- `destroy <name>` deletes the GitHub registration, removes the sandbox and the ssh block. It
-  never starts the sandbox, so it works on a stopped one.
+- `destroy <name>` deletes the GitHub registration, removes the sandbox, its mount dir and the ssh
+  block. It never starts the sandbox, so it works on a stopped one. A failed GitHub call (no
+  `GH_ADMIN_TOKEN`, network, 5xx) does not block the local teardown: the sandbox still goes, the
+  state record is kept with the key id, `destroy` exits non-zero, and running it again retries the
+  deletion.
 - `stop <name>` stops a sandbox and keeps everything else: disk, port, GitHub key, ssh block.
   `start <name>` boots it again and relaunches sshd (the guest has no init to do it).
 - `ssh <name>` is `ssh wbox-<name>` with a check that the sandbox is running. It never starts one.
@@ -79,13 +92,13 @@ host keys that `accept-new` would trust once and then refuse.
 as `dev` at every `create` and holds what must be unique per VM: the ed25519 key (a key baked into
 the snapshot would be shared by every sandbox), the git identity, and the writable configs.
 
-Editing `provision.sh` takes effect on the next `create`, no rebuild needed — but not via the
-builder's `patch` mechanism: a snapshot-rooted sandbox rejects patches outright
-(`"patches cannot be combined with from_snapshot"`, `backend/local/sandbox/create.rs:278`), because
-they would have to be re-baked into the snapshot's upper. `create` therefore pushes the current
-script into the running guest over the agent's filesystem channel
-(`sandbox.fs().copy_from_host(..)`) before executing it. The snapshot's build-time copy is only a
-fallback and a guarantee that `/opt/wbox` exists.
+Editing `provision.sh` or a config in `vm-files/` takes effect on the next `create`, no rebuild
+needed, but not via the builder's `patch` mechanism: a snapshot-rooted sandbox rejects patches
+outright (`"patches cannot be combined with from_snapshot"`, `backend/local/sandbox/create.rs:278`),
+because they would have to be re-baked into the snapshot's upper. `create` therefore pushes the
+current script and the `vm-files/` configs into the running guest over the agent's filesystem
+channel (`sandbox.fs().copy_from_host(..)`, one file at a time) before executing it. The snapshot's
+build-time copies only guarantee that `/opt/wbox` and its layout exist.
 
 ### Git auth: the token, not the key
 
@@ -129,18 +142,21 @@ interception proxy swaps for the real value on requests to `api.anthropic.com`.
 
 Three things make that the *only* credential in the VM:
 
-- The mount is not the Lima share. Sandboxes get `~/.wbox/claude` and `~/.wbox/agents`, and
-  `create` copies an allowlist into them from `~/lima/claude` and `~/lima/agents` at every run:
-  `settings.json`, `CLAUDE.md`, `statusline-command.sh`, `hooks/`,
-  `skills/`, `output-styles/`, `plugins/`, `AGENTS.md` (`CLAUDE_SEED` in `create.rs`). Your own
+- The mount is not the Lima share. Each sandbox gets its own `.runtime/wbox-mounts/<name>/claude`
+  and `.../agents`, and `create` copies an allowlist into them from `~/lima/claude` and
+  `~/lima/agents`: `settings.json`, `CLAUDE.md`, `statusline-command.sh`, `hooks/`, `skills/`,
+  `output-styles/`, `plugins/`, `AGENTS.md` (`CLAUDE_SEED` in `create.rs`). Your own
   `.credentials.json`, history, projects and sessions stay on the host side of that line. Edit the
-  Lima copies and the next `create` picks the change up; anything a sandbox writes into
-  `~/.wbox/claude` is left alone.
+  Lima copies and the next `create` picks the change up. Nothing a sandbox writes there is seen by
+  another sandbox, and `destroy` removes the dir. The copy never follows a symlink: the share is
+  writable by the Lima guests, so a link swapped in there arrives as a link, not as the host files
+  it points at. On APFS a directory is cloned with `clonefile(2)`, so the `plugins/` tree (33 MB,
+  thousands of files) costs milliseconds per create.
 - `~/.claude/.credentials.json` is never seeded, but Claude Code writes one as soon as anything
-  logs in, and every later sandbox would read it. When `CLAUDE_CODE_OAUTH_TOKEN` is set, `create`
-  binds an empty readonly stub over that path, so nothing is read from it and nothing written to
-  it. Without the token the sandbox has no Claude credential at all and has to log in, and what it
-  gets lands in `~/.wbox/claude`.
+  logs in. When `CLAUDE_CODE_OAUTH_TOKEN` is set, `create` binds an empty readonly stub over that
+  path, so nothing is read from it and nothing written to it. Without the token the sandbox has no
+  Claude credential at all and has to log in, and what it gets lands in that sandbox's own mount
+  dir and goes with `destroy`.
 - `~/.claude.json` is per-VM and not part of the mount, so a fresh sandbox has none of the flags
   that mark onboarding done, and Claude Code opens on the theme picker, the login-method screen
   and the bypass-permissions warning. `provision.sh` seeds them, only where absent.
@@ -195,8 +211,9 @@ node.
 
 ## Where the runtime lives, and the symlink
 
-The runtime data — `msb`, `libkrunfw`, the image cache, snapshots, root disks, the interception CA,
-`authorized_keys`, the wbox state files — all live under the gitignored `microsandbox/.runtime`.
+The runtime data (`msb`, `libkrunfw`, the image cache, snapshots, root disks, the interception CA,
+`authorized_keys`), the wbox state files and the per-sandbox mount dirs all live under the
+gitignored `microsandbox/.runtime`.
 
 `wbox` does not hand the runtime *that* path. macOS caps `sockaddr_un.sun_path` at 104 bytes, and
 every per-sandbox agent socket is derived from the runtime home plus a suffix of up to 52 bytes.
@@ -211,68 +228,21 @@ is short. `wbox` refuses to run if that path is still too long, and says by how 
 seams (`LocalBackend` for db/cache/sandboxes/snapshots, `resolve_home()` for the TLS CA and socket
 fallbacks) must agree on it.
 
-## Unverified
+## Verified
 
-- **Guest CA trust.** Secret injection turns TLS interception on for the whole sandbox. The runtime
-  writes the interception CA host-side to `<home>/sandboxes/<name>/runtime/tls/ca.pem`, and the
-  upstream docs claim it is added to the guest trust store — nothing in the vendored source proves
-  where it lands inside a Debian guest. The Home Manager config exports `SSL_CERT_FILE` and
-  `NODE_EXTRA_CA_CERTS` pointing at `/etc/ssl/certs/ca-certificates.crt` as the fallback lever: if
-  the guest store is not updated by the runtime, `bootstrap.sh` (or a `patch`) has to drop the CA
-  there and run `update-ca-certificates`. Not exercised yet — `wbox create` has not been run against
-  a live GitHub account in this repo.
-- **GitHub registration.** The `create`/`destroy` registration paths are written but have never been
-  run against the real API here; no key has been created or deleted by this code.
+On macOS 25.6 / arm64, against a live GitHub account:
 
-## Build run
-
-`cargo run --release -- build` was run end to end on macOS 25.6 / arm64. It failed, in the
-`home-manager switch` step, for a reason outside this code. Everything before it worked:
-
-- `debian:13` pulled and booted as `devstation-builder`
-- apt prerequisites installed (deb.debian.org reachable from the guest, 10.1 MB in 2s)
-- the `dev` user created with zsh and passwordless sudo
-- **Nix installed single-user** (`nix-2.35.2-aarch64-linux`), flakes enabled
-- `home-manager switch` evaluated the flake, fetched 102 paths (71 MiB) from `cache.nixos.org`,
-  and then had to build `herdr-0.8.2` from source, which vendors its crates
-
-The failing step is that vendoring. Verbatim:
-
-```
-error: Cannot build '/nix/store/x9nb7kb5hw7zbs8lj43kwcd6qc76w1p5-crate-serial2-0.2.34.tar.gz.drv'.
-       Reason: builder failed with exit code 1.
-       Last 17 log lines:
-       > trying https://crates.io/api/v1/crates/serial2/0.2.34/download
-       > curl: (22) The requested URL returned error: 403
-       > Warning: Problem (retrying all errors). Retrying in 1 second. 3 retries left.
-       > curl: (22) The requested URL returned error: 403
-       ...
-       > error: cannot download crate-serial2-0.2.34.tar.gz from any mirror
-error: Cannot build '/nix/store/0rx0g2k0kf8jpgmhxi27jbgb0ll3l8v0-herdr-0.8.2.drv'.
-error: Cannot build '/nix/store/xwnbl51gbkjdyyw1g5xi5jiyxcwmw42z-home-manager-generation.drv'.
-```
-
-Then, from `wbox` itself:
-
-```
-wbox: bootstrap.sh exited 1; the devstation-builder sandbox was left for inspection
-```
-
-**This is not a sandbox networking problem.** The same URL 403s from the host, outside any VM:
-
-```
-$ curl -sS -o /dev/null -w '%{http_code}\n' -L https://crates.io/api/v1/crates/serial2/0.2.34/download
-403
-$ curl -sS -o /dev/null -H 'User-Agent:' -w '%{http_code}\n' -L https://crates.io/api/v1/crates/serial2/0.2.34/download
-200
-```
-
-crates.io is refusing requests whose `User-Agent` announces curl, which is what nix's `fetchurl`
-sends. Any build of `herdr` from source hits it, in a VM or not, until crates.io relaxes that or
-the derivation changes its user agent. So `devstation-base` does not exist yet: the snapshot step,
-`Sandbox::remove` of the builder, and everything downstream (`create`, `ssh`, GitHub registration)
-have not been exercised end to end.
-
-The stopped `devstation-builder` sandbox is left behind on purpose — it is the evidence, and it
-carries the completed apt/Nix layers. It is deliberately unlabelled, so it does not show up in
-`wbox list` next to sandboxes you created; `wbox build --force` removes it and starts over.
+- `wbox build` end to end. herdr and worktrunk come as prebuilt release binaries
+  (`home/prebuilt.nix`), so `home-manager switch` compiles nothing. The source build used to fail
+  because crates.io answers 403 to nix's `fetchurl` user agent, in a VM or not; that is what
+  `prebuilt.nix` is for.
+- `create`, `ssh`, `stop`, `start`, `destroy`, and the signing-key registration and deletion.
+  `start` after `stop` brings sshd back and the ssh block still resolves.
+- Guest CA trust. Secret injection turns TLS interception on for the whole sandbox, and the
+  runtime's CA has to be trusted inside the guest for that to work. `git ls-remote https://github.com/...`
+  and `gh api user` from inside a sandbox succeed through the proxy, so git and gh trust it. The
+  `SSL_CERT_FILE` and `NODE_EXTRA_CA_CERTS` exports in `home.nix` stay as the lever for a tool that
+  reads its own store.
+- `create` on a name that already exists is refused before any record is written.
+- The seed copy of `plugins/` (33 MB) takes a `create` from about 1.3 s of copying to a
+  single `clonefile(2)` call; a whole `create` is around 3 s.

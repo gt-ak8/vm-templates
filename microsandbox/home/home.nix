@@ -11,9 +11,10 @@
 # sourcing). No ssh-agent forwarding here: each sandbox holds its own key.
 #
 # HM only manages what it generates (packages, shell, git). Editable config
-# files (herdr) are seeded as writable copies by bootstrap.sh; shared agent
-# files (AGENTS.md, CLAUDE.md) live in the host mounts. The repo seeds the VM
-# at creation, then the VM owns its config: change = recreate.
+# files (herdr, worktrunk) are seeded as writable copies by provision.sh at
+# create; shared agent files (AGENTS.md, CLAUDE.md) live in the host mounts.
+# The repo seeds the VM at creation, then the VM owns its config: change =
+# recreate.
 
 {
   home.username = "dev";

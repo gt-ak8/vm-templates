@@ -24,6 +24,9 @@ const ADMIN_SCOPES: [&str; 1] = ["admin:ssh_signing_key"];
 /// Files `build` copies into the base image.
 const BUILD_PAYLOAD: [&str; 3] = ["bootstrap.sh", "home", "vm-files"];
 
+/// Files `create` pushes into the guest before running `provision.sh`.
+const CREATE_PAYLOAD: [&str; 2] = ["provision.sh", "vm-files"];
+
 /// Checks for `wbox build`: only the payload it copies into the image.
 pub fn build_preflight() -> Res<()> {
     let mut problems = Vec::new();
@@ -36,7 +39,7 @@ pub fn build_preflight() -> Res<()> {
 /// Assumes `create::load_env_file` has already run.
 pub async fn create_preflight() -> Res<()> {
     let mut problems = Vec::new();
-    check_payload(&["provision.sh"], &mut problems);
+    check_payload(&CREATE_PAYLOAD, &mut problems);
     check_git_identity(&mut problems);
     check_copilot();
     check_github(&mut problems);

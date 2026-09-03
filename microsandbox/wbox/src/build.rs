@@ -58,6 +58,11 @@ pub async fn build(force: bool, disk_gib: u32) -> Res<()> {
         // Deliberately unlabelled: `wbox list` shows the sandboxes a user
         // created, and this one is build scaffolding. `build --force` is what
         // cleans it up.
+        //
+        // `provision.sh` and `vm-files/` are baked too, but only so that
+        // `/opt/wbox` and its layout exist in the snapshot: `create` pushes
+        // the current versions over the agent channel before running them, so
+        // editing either never needs a rebuild.
         .patch(|p| {
             p.copy_dir(payload.join("home"), "/opt/wbox/home", true)
                 .copy_dir(payload.join("vm-files"), "/opt/wbox/vm-files", true)
