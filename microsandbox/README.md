@@ -2,11 +2,11 @@
 
 A second devstation substrate: the same Debian 13 + Home Manager payload as the Lima devstation
 template, booted on [microsandbox](https://crates.io/crates/microsandbox) microVMs instead of Lima. Its
-own data stays under this directory: the runtime, the state records and the per-sandbox mounts live
-in the gitignored `.runtime/`. Outside it, `create` reads `~/lima/claude` and `~/lima/agents` (the
-seed), `~/.ssh/*.pub` and opencode's `~/.local/share/opencode/auth.json`, and writes
-`~/.ssh/config.d/wbox` plus one `Include` line in `~/.ssh/config`. `~/.wbox/<repo-dir>` is a
-symlink into `.runtime` (see "Where the runtime lives").
+own data stays under this directory: the runtime and the state records live in the gitignored
+`.runtime/`. Outside it, `create` reads `~/lima/claude` and `~/lima/agents` (the seed),
+`~/.ssh/*.pub` and opencode's `~/.local/share/opencode/auth.json`, and writes the shared mounts
+`~/.wbox/claude` and `~/.wbox/agents`, `~/.ssh/config.d/wbox` plus one `Include` line in
+`~/.ssh/config`. `~/.wbox/<repo-dir>` is a symlink into `.runtime` (see "Where the runtime lives").
 
 The entry point is `wbox` (work box), a small Rust binary over the `microsandbox` crate 0.6.16. It
 replaces `host-setup.sh` + `create.sh` + `destroy.sh` + `lima.yaml`.
@@ -50,8 +50,8 @@ recipes.
   snapshot, and that `GH_ADMIN_TOKEN` really carries `admin:ssh_signing_key`.
   All failures are reported at once, before anything boots.
 - `create <name> [--cpus N] [--memory MiB] [--ssh-port P] [--metrics]` boots from that snapshot, publishes
-  the guest's sshd on `127.0.0.1:P` (default: the first free port from 22200), bind-mounts the
-  sandbox's own `.runtime/wbox-mounts/<name>/{claude,agents}` (seeded from the Lima shares, see
+  the guest's sshd on `127.0.0.1:P` (default: the first free port from 22200), bind-mounts
+  `~/.wbox/claude` and `~/.wbox/agents` (shared by every sandbox, seeded from the Lima shares, see
   below), injects `GH_TOKEN` and, when set, `CLAUDE_CODE_OAUTH_TOKEN` as secrets, pushes
   `provision.sh` and `vm-files/` into the guest and runs the script, registers the sandbox's key
   with GitHub at `/user/ssh_signing_keys`, and writes a `Host wbox-<name>` block into
@@ -65,8 +65,7 @@ recipes.
   only feed `MSB_HOME=~/.wbox/vm-templates msb metrics <name>`, so pass `--metrics` when you
   need that for debugging. The setting is part of the stored spec, so it applies to `start`
   too and changing it means destroying and recreating the sandbox.
-- `destroy <name>` deletes the GitHub registration, removes the sandbox, its mount dir and the ssh
-  block. It never starts the sandbox, so it works on a stopped one. A failed GitHub call (no
+- `destroy <name>` deletes the GitHub registration, removes the sandbox and the ssh block. It never starts the sandbox, so it works on a stopped one. A failed GitHub call (no
   `GH_ADMIN_TOKEN`, network, 5xx) does not block the local teardown: the sandbox still goes, the
   state record is kept with the key id, `destroy` exits non-zero, and running it again retries the
   deletion.
@@ -142,21 +141,24 @@ interception proxy swaps for the real value on requests to `api.anthropic.com`.
 
 Three things make that the *only* credential in the VM:
 
-- The mount is not the Lima share. Each sandbox gets its own `.runtime/wbox-mounts/<name>/claude`
-  and `.../agents`, and `create` copies an allowlist into them from `~/lima/claude` and
-  `~/lima/agents`: `settings.json`, `CLAUDE.md`, `statusline-command.sh`, `hooks/`, `skills/`,
-  `output-styles/`, `plugins/`, `AGENTS.md` (`CLAUDE_SEED` in `create.rs`). Your own
-  `.credentials.json`, history, projects and sessions stay on the host side of that line. Edit the
-  Lima copies and the next `create` picks the change up. Nothing a sandbox writes there is seen by
-  another sandbox, and `destroy` removes the dir. The copy never follows a symlink: the share is
-  writable by the Lima guests, so a link swapped in there arrives as a link, not as the host files
-  it points at. On APFS a directory is cloned with `clonefile(2)`, so the `plugins/` tree (33 MB,
-  thousands of files) costs milliseconds per create.
+- The mount is not the Lima share. Sandboxes get `~/.wbox/claude` and `~/.wbox/agents`, one pair
+  for all of them as the Lima VMs have theirs, and `create` copies an allowlist into them from
+  `~/lima/claude` and `~/lima/agents` at every run: `settings.json`, `CLAUDE.md`,
+  `statusline-command.sh`, `hooks/`, `skills/`, `output-styles/`, `plugins/`, `AGENTS.md`
+  (`CLAUDE_SEED` in `create.rs`). Your own `.credentials.json`, history, projects and sessions stay
+  on the host side of that line. Edit the Lima copies and the next `create` picks the change up;
+  anything a sandbox writes into `~/.wbox/claude` is left alone and is what the other sandboxes see,
+  so a skill edited in one box holds in every box. Each seeded entry is swapped in whole (copied
+  under a staging name, then renamed into place), so a sandbox running on the mount never reads a
+  half-written tree. The copy never follows a symlink: the share is writable by the Lima guests, so
+  a link swapped in there arrives as a link, not as the host files it points at. On APFS a
+  directory is cloned with `clonefile(2)`, so the `plugins/` tree (33 MB, thousands of files) costs
+  milliseconds per create.
 - `~/.claude/.credentials.json` is never seeded, but Claude Code writes one as soon as anything
-  logs in. When `CLAUDE_CODE_OAUTH_TOKEN` is set, `create` binds an empty readonly stub over that
-  path, so nothing is read from it and nothing written to it. Without the token the sandbox has no
-  Claude credential at all and has to log in, and what it gets lands in that sandbox's own mount
-  dir and goes with `destroy`.
+  logs in, and every later sandbox would read it. When `CLAUDE_CODE_OAUTH_TOKEN` is set, `create`
+  binds an empty readonly stub over that path, so nothing is read from it and nothing written to
+  it. Without the token the sandbox has no Claude credential at all and has to log in, and what it
+  gets lands in `~/.wbox/claude`, where every sandbox shares it, as the Lima VMs share theirs.
 - `~/.claude.json` is per-VM and not part of the mount, so a fresh sandbox has none of the flags
   that mark onboarding done, and Claude Code opens on the theme picker, the login-method screen
   and the bypass-permissions warning. `provision.sh` seeds them, only where absent.
@@ -212,8 +214,9 @@ node.
 ## Where the runtime lives, and the symlink
 
 The runtime data (`msb`, `libkrunfw`, the image cache, snapshots, root disks, the interception CA,
-`authorized_keys`), the wbox state files and the per-sandbox mount dirs all live under the
-gitignored `microsandbox/.runtime`.
+`authorized_keys`), the wbox state files and the credentials stub all live under the gitignored
+`microsandbox/.runtime`. The shared `~/.wbox/claude` and `~/.wbox/agents` mounts are the one thing
+outside it, because they outlive any checkout.
 
 `wbox` does not hand the runtime *that* path. macOS caps `sockaddr_un.sun_path` at 104 bytes, and
 every per-sandbox agent socket is derived from the runtime home plus a suffix of up to 52 bytes.
@@ -244,5 +247,7 @@ On macOS 25.6 / arm64, against a live GitHub account:
   `SSL_CERT_FILE` and `NODE_EXTRA_CA_CERTS` exports in `home.nix` stay as the lever for a tool that
   reads its own store.
 - `create` on a name that already exists is refused before any record is written.
+- A `create` while another sandbox runs on the shared mount: the running box keeps reading its
+  `~/.claude` throughout, and the new box sees the same tree.
 - The seed copy of `plugins/` (33 MB) takes a `create` from about 1.3 s of copying to a
   single `clonefile(2)` call; a whole `create` is around 3 s.

@@ -12,9 +12,9 @@ use crate::{
 /// Never starts the sandbox: the key id comes from the state file, which is
 /// readable whatever the sandbox is doing, and survives it entirely.
 ///
-/// A GitHub failure does not block the local teardown. The sandbox, its
-/// mounts and its ssh block go regardless, and the state record is kept with
-/// the key id so a later `destroy` of the same name retries the deletion.
+/// A GitHub failure does not block the local teardown. The sandbox and its
+/// ssh block go regardless, and the state record is kept with the key id so a
+/// later `destroy` of the same name retries the deletion.
 pub async fn destroy(name: &str) -> Res<()> {
     runtime::ensure_runtime().await?;
 
@@ -48,7 +48,6 @@ pub async fn destroy(name: &str) -> Res<()> {
     }
 
     drop_ssh_config(name)?;
-    remove_mounts(name)?;
 
     match undeleted_key {
         None => {
@@ -82,14 +81,4 @@ fn drop_ssh_config(name: &str) -> Res<()> {
         return Ok(());
     }
     create::write_private(&path, &create::drop_ssh_block(&contents, name))
-}
-
-/// Remove the sandbox's mount dir, with everything the guest wrote into it.
-fn remove_mounts(name: &str) -> Res<()> {
-    let path = create::mount_dir_path(name)?;
-    match std::fs::remove_dir_all(&path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("cannot remove {}: {error}", path.display()).into()),
-    }
 }

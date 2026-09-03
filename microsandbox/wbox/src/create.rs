@@ -128,18 +128,18 @@ pub async fn create(name: &str, opts: CreateOpts) -> Res<()> {
     // Sandboxes get their own host dirs, not the ones the Lima VMs share: a
     // sandbox has no business reading the host's Claude credentials, its
     // conversation history or its project state. The config and the skills are
-    // copied in from the Lima share at create, so the two stay in step without
-    // the sandbox seeing the rest. One dir per sandbox, too: a shared one would
-    // hand whatever one guest writes (a login, a session) to every later guest,
-    // and the reseed at create would rewrite it under a running sandbox.
-    let mounts = mount_dir(name)?;
-    let claude_mount = seed_mount(&mounts, "claude", &CLAUDE_SEED)?;
-    let agents_mount = seed_mount(&mounts, "agents", &AGENTS_SEED)?;
+    // copied in from the Lima share at every create, so the two stay in step
+    // without the sandbox seeing the rest. One dir for all sandboxes, as with
+    // the Lima VMs: a skill edited or a login made in one box is meant to hold
+    // in every other. The reseed swaps each entry in whole (see `seed_into`),
+    // so a running box never reads a half-written tree.
+    let claude_mount = seed_mount("claude", &CLAUDE_SEED)?;
+    let agents_mount = seed_mount("agents", &AGENTS_SEED)?;
     let claude_token = std::env::var(CLAUDE_TOKEN_VAR).unwrap_or_default();
     let claude_token = claude_token.trim();
     let copilot_token = std::env::var(COPILOT_TOKEN_VAR).unwrap_or_default();
     let has_copilot = !copilot_token.trim().is_empty();
-    let credentials_stub = credentials_stub(&mounts)?;
+    let credentials_stub = credentials_stub()?;
     let authorized_keys = host_public_keys()?;
     let ssh_port = pick_ssh_port(opts.ssh_port)?;
     // Recorded before the boot: a create that fails past this point leaves a
@@ -211,10 +211,10 @@ pub async fn create(name: &str, opts: CreateOpts) -> Res<()> {
             })
             // The mount is never seeded with credentials, but Claude Code
             // writes its own there the moment anything logs in, and that file
-            // would then survive into a re-created sandbox of the same name.
-            // An empty stub is bound over the path, readonly, so the token
-            // secret above stays the only Claude credential in the VM and
-            // nothing can be written back to the host.
+            // would then be read by every later sandbox. An empty stub is
+            // bound over the path, readonly, so the token secret above stays
+            // the only Claude credential in the VM and nothing can be written
+            // back to the host.
             .volume(CLAUDE_CREDENTIALS, |m| m.bind(&credentials_stub).readonly())
     };
 
@@ -417,13 +417,14 @@ fn load_copilot_token() {
     }
 }
 
-/// An empty credentials file, kept in the sandbox's mount dir, bound over the
-/// real one.
+/// An empty credentials file, kept on the host, bound over the real one.
 ///
 /// Rewritten every create: a stub someone edited into holding a token would
-/// silently undo the shadowing it exists for.
-fn credentials_stub(mounts: &Path) -> Res<PathBuf> {
-    let path = mounts.join("claude-credentials-stub.json");
+/// silently undo the shadowing it exists for. Under the runtime data dir by
+/// its real path, not the `~/.wbox/<repo>` link: the runtime resolves a mount
+/// root following no symlink and refuses one ("Not a directory").
+fn credentials_stub() -> Res<PathBuf> {
+    let path = runtime::data_dir().join("claude-credentials-stub.json");
     std::fs::write(&path, b"{}")?;
     Ok(path)
 }
@@ -434,39 +435,37 @@ fn host_path(relative: &str) -> Res<PathBuf> {
     Ok(Path::new(&home).join(relative))
 }
 
-/// The host dir holding everything bind-mounted into sandbox `name`.
-///
-/// Under the runtime data dir, next to the state files: one dir per sandbox,
-/// so nothing a guest writes is visible to another, and `destroy` removes it
-/// whole. The real path, not the `~/.wbox/<repo>` link the runtime home is
-/// reached through: the runtime resolves a mount root following no symlink and
-/// refuses one ("Not a directory").
-pub fn mount_dir_path(name: &str) -> Res<PathBuf> {
-    Ok(runtime::data_dir().join("wbox-mounts").join(name))
-}
-
-/// `mount_dir_path`, created.
-fn mount_dir(name: &str) -> Res<PathBuf> {
-    let path = mount_dir_path(name)?;
+/// A directory under the host's `$HOME`, created.
+fn host_dir(relative: &str) -> Res<PathBuf> {
+    let path = host_path(relative)?;
     std::fs::create_dir_all(&path)?;
     Ok(path)
 }
 
-/// Prepare `<mounts>/<share>`, seeding `entries` from `~/lima/<share>`.
+/// Prepare `~/.wbox/<share>`, seeding `entries` from `~/lima/<share>`.
 ///
 /// The Lima share is the source of truth for the seeded entries: each one is
-/// replaced, so a settings or skills change made host-side reaches the next
-/// sandbox. Everything else in the dir is left alone.
-fn seed_mount(mounts: &Path, share: &str, entries: &[&str]) -> Res<PathBuf> {
+/// replaced on every create, so a settings or skills change made host-side
+/// reaches the next sandbox. Everything else in the wbox dir is left alone,
+/// which is where the sandboxes' own writes live, shared between them.
+fn seed_mount(share: &str, entries: &[&str]) -> Res<PathBuf> {
     let source = host_path(&format!("lima/{share}"))?;
-    let target = mounts.join(share);
-    std::fs::create_dir_all(&target)?;
+    let target = host_dir(&format!(".wbox/{share}"))?;
     seed_into(&source, &target, entries)?;
     Ok(target)
 }
 
+/// Suffixes of the staging names `seed_into` uses next to an entry.
+const SEED_NEW_SUFFIX: &str = ".wbox-new";
+const SEED_OLD_SUFFIX: &str = ".wbox-old";
+
 /// Replace each of `entries` under `target` with a copy of the one under
 /// `source`, skipping entries `source` lacks.
+///
+/// Each entry is swapped in whole: the copy is built next to it under a
+/// staging name, then two renames put it in place, so a sandbox already
+/// running on `target` never sees a half-written tree, only the old entry or
+/// the new one. Staging names left by an interrupted run are cleared first.
 ///
 /// The source is a Lima guest's writable mount, so nothing in it is trusted to
 /// be what it says: symlinks are never followed on the way in (see
@@ -479,8 +478,16 @@ fn seed_into(source: &Path, target: &Path, entries: &[&str]) -> Res<()> {
             continue;
         }
         let to = target.join(entry);
-        remove_any(&to)?;
-        copy_tree(&from, &to)?;
+        let staged = target.join(format!("{entry}{SEED_NEW_SUFFIX}"));
+        let old = target.join(format!("{entry}{SEED_OLD_SUFFIX}"));
+        remove_any(&staged)?;
+        remove_any(&old)?;
+        copy_tree(&from, &staged)?;
+        if std::fs::symlink_metadata(&to).is_ok() {
+            std::fs::rename(&to, &old)?;
+        }
+        std::fs::rename(&staged, &to)?;
+        remove_any(&old)?;
     }
     Ok(())
 }
@@ -945,6 +952,17 @@ mod seed_tests {
         seed_into(&lima, &mount, &CLAUDE_SEED).unwrap();
         assert_eq!(std::fs::read(mount.join("settings.json")).unwrap(), b"{}");
         assert!(mount.join("history.jsonl").is_file());
+        // No staging name survives a completed reseed.
+        let names: Vec<String> = std::fs::read_dir(&mount)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .all(|n| !n.ends_with(".wbox-new") && !n.ends_with(".wbox-old")),
+            "{names:?}"
+        );
 
         std::fs::remove_dir_all(&home).unwrap();
     }
