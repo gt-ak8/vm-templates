@@ -1,6 +1,7 @@
 {
   pkgs,
   herdr-pkg,
+  mise-pkg,
   worktrunk-pkg,
   ...
 }:
@@ -47,7 +48,9 @@
     # .tool-versions / .nvmrc / .python-version / ... and, with
     # not_found_auto_install, fetches the pinned version on first use. Shell
     # hook is wired in initContent; global config seeded by bootstrap.sh.
-    mise
+    # From unstable (see flake.nix): stable 26.05 is frozen at 2026.5.12 and
+    # repos pinning `min_version = "2026.8.x"` refuse to run against it.
+    mise-pkg
   ];
 
   # claude-code is deliberately NOT managed here: the nix store is read-only so

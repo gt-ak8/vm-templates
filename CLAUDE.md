@@ -6,9 +6,11 @@ Lima VM templates for disposable agentic dev sandbox VMs on macOS.
 - `host/` - host-side scripts: shared dir setup, launchd agent for ssh-agent forwarding, destroy
 - Create a VM: `templates/devstation/create.sh [name]` (after `host/host-setup.sh [name]`)
 - Destroy a VM: `host/destroy.sh [name]` (VM + launchd agent; keeps shared dirs)
+- microsandbox: `just wbox install` builds `wbox` into `~/.local/bin`, `just wbox check` runs fmt, clippy and tests (root `justfile` imports `microsandbox/justfile`)
 
 ## Template register
 
-| Template   | Info                    |
-| ---------- | ----------------------- |
-| devstation | `templates/devstation/` |
+| Template                | Info                                               |
+| ----------------------- | -------------------------------------------------- |
+| devstation              | `templates/devstation/` (Lima)                     |
+| microsandbox devstation | `microsandbox/` (microVM substrate, `wbox` binary) |

@@ -4,6 +4,10 @@
   inputs = {
     # nixos- channel (NOT -darwin): these outputs target Linux VMs.
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+    # Unstable, for the few packages the stable channel freezes too far back.
+    # Only what is wired through extraSpecialArgs below comes from here; the
+    # rest of the closure stays on stable.
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     home-manager.url = "github:nix-community/home-manager/release-26.05";
     home-manager.inputs.nixpkgs.follows = "nixpkgs";
     # herdr: agent multiplexer; upstream flake builds from source.
@@ -18,6 +22,7 @@
     inputs@{
       self,
       nixpkgs,
+      nixpkgs-unstable,
       home-manager,
       herdr,
       worktrunk,
@@ -34,6 +39,13 @@
           };
           extraSpecialArgs = {
             herdr-pkg = herdr.packages.${system}.default;
+            # mise from unstable: projects gate on a min mise version
+            # (`min_version` in mise.toml) and stable 26.05 is frozen at
+            # 2026.5.12, too old for repos asking 2026.8.x.
+            mise-pkg =
+              (import nixpkgs-unstable {
+                inherit system;
+              }).mise;
             # Flake inputs carry no .git, so upstream's build would stamp the
             # bare commit sha into `wt --version`. Stamp the tag instead.
             # Keep in sync with the worktrunk input tag above.

@@ -1,0 +1,42 @@
+# worktrunk user config. Seeded by bootstrap.sh; edit freely in the VM.
+# Reference: `wt config create` generates a fully commented template.
+
+# All worktrees under ~/worktree/<project>/<worktree>, out of the repo checkouts.
+worktree-path = "~/worktree/{{ repo }}/{{ branch | sanitize }}"
+
+# Conventional-commit messages via claude (same as the host config).
+[commit.generation]
+command = "CLAUDECODE= MAX_THINKING_TOKENS=0 claude -p --no-session-persistence --model=haiku --tools='' --disable-slash-commands --setting-sources='' --system-prompt=''"
+template = """
+Generate a git commit message for the staged changes below.
+
+Follow the Conventional Commits format strictly:
+
+  <type>[optional scope]: <description>
+
+  [optional body]
+
+Types: feat, fix, refactor, perf, test, docs, style, build, ci, chore, revert
+- Use imperative mood: "add" not "added"
+- One type per commit
+- Scope is optional; use it only when it adds clarity
+- Description must be short (under 72 chars)
+- Add a body only if the description alone doesn't explain the why
+- For breaking changes: append ! after the type and add a BREAKING CHANGE: footer
+- Output only the commit message — no explanation, no quotes, no code block
+
+<diff_stat>
+{{ git_diff_stat }}
+</diff_stat>
+
+<diff>
+{{ git_diff }}
+</diff>
+
+<context>
+Branch: {{ branch }}
+Repo: {{ repo }}
+Recent commits:
+{{ recent_commits }}
+</context>
+"""

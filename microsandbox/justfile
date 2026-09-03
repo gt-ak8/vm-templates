@@ -1,0 +1,47 @@
+# wbox: microsandbox-backed devstation sandboxes.
+# Imported as a module from the repo root: `just wbox <recipe>`.
+
+set working-directory := 'wbox'
+
+bin_dir := env('WBOX_BIN_DIR', home_directory() / '.local' / 'bin')
+
+[private]
+default:
+    @just --list --list-submodules wbox
+
+# Build the release binary (wbox/target/release/wbox)
+build:
+    cargo build --release
+
+# Build, then symlink the release binary into {{bin_dir}}
+install: build
+    mkdir -p '{{bin_dir}}'
+    ln -sfn "$(pwd)/target/release/wbox" '{{bin_dir}}/wbox'
+    @echo "wbox -> {{bin_dir}}/wbox"
+
+# Remove the symlink from {{bin_dir}}
+uninstall:
+    rm -f '{{bin_dir}}/wbox'
+
+# Run the tests
+test:
+    cargo test
+
+# Clippy with warnings as errors
+lint:
+    cargo clippy --all-targets -- -D warnings
+
+# Check formatting
+fmt-check:
+    cargo fmt --check
+
+# Format the sources
+fmt:
+    cargo fmt
+
+# fmt-check + lint + test
+check: fmt-check lint test
+
+# Drop build artifacts
+clean:
+    cargo clean
